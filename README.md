@@ -62,7 +62,7 @@ Usage of ./dts_verify_tool:
     结果存放db名 (default "dts_verify_result")
 ```
 
-1. 创建对比任务，./dts_verify_tool -verify=data_db_all -src_uri="xxx" -dst_uri="xxx"
+1. 创建对比任务，./dts_verify_tool -verify=data_all -src_uri="xxx" -dst_uri="xxx"
 2. 创建后任务开始执行，此时可以执行 ./dts_verify_tool -run_mode=show_task_info 查看任务执行详情
 3. 如果要查看任务参数，执行 ./dts_verify_tool -run_mode=show_config
 4. 如果要调整并发数，执行 ./dts_verify_tool -run_mode=flush_config -src_concurrenct=20 -dst_concurrency=500 进行调整
