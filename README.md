@@ -74,3 +74,4 @@ Usage of ./dts_verify_tool:
 + 分片集群如果做增量校验，需要传入mongod的地址（-src_mongod_uri参数），否则会报拿不到oplog的错误
 + 校验data_count时会做全表扫描，可能会影响集群的性能
 + 源端连接串建议带上readPerference=secondaryPreferred参数
++ 如果任务中有增量数据校验，则任务不会主动结束，会持续读取oplog进行比对。正常情况下数据不一致数量和延迟时间会维持在一个稳定的数值上下，且如果停止源端写入后会达到0
