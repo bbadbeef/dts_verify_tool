@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+const (
+	logPath = "compare.log"
+)
+
 var (
 	// GlobalLogger ...
 	GlobalLogger *logrus.Logger
@@ -23,9 +27,9 @@ func SetGlobalLogger(l *logrus.Logger) {
 }
 
 // NewLogger ...
-func NewLogger(out io.Writer) *logrus.Logger {
+func NewLogger(out io.Writer, id string) *logrus.Logger {
 	l := logrus.New()
-	l.SetFormatter(&Formatter{})
+	l.SetFormatter(&Formatter{id: id})
 	l.SetLevel(logrus.InfoLevel)
 	l.SetOutput(out)
 	return l
@@ -33,6 +37,7 @@ func NewLogger(out io.Writer) *logrus.Logger {
 
 // Formatter ...
 type Formatter struct {
+	id string
 }
 
 // Format ...
@@ -67,15 +72,15 @@ func (m *Formatter) Format(entry *logrus.Entry) ([]byte, error) {
 	}
 
 	var newLog string
-	newLog = fmt.Sprintf("[%s] [%s] [%s:%d] [%s] %s\n", timestamp, entry.Level, path.Base(file), line,
-		strings.TrimLeft(path.Ext(runtime.FuncForPC(pc).Name()), "."), entry.Message)
+	newLog = fmt.Sprintf("[%s] [%s] [%s:%d] [%s] [%s] %s\n", timestamp, entry.Level, path.Base(file), line,
+		strings.TrimLeft(path.Ext(runtime.FuncForPC(pc).Name()), "."), m.id, entry.Message)
 
 	b.WriteString(newLog)
 	return b.Bytes(), nil
 }
 
 // GetRotateWriter ...
-func GetRotateWriter(logPath string) (io.Writer, error) {
+func GetRotateWriter() (io.Writer, error) {
 	return rotatelogs.New(
 		logPath+".%Y%m%d",
 		rotatelogs.WithLinkName(logPath),

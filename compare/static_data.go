@@ -287,6 +287,7 @@ func (sd *staticDataJob) newConsumeRoutine(ctx context.Context, cancel context.C
 		}()
 		for {
 			if unit.shouldExit() {
+				sd.log.Info("consume routine will exit by routine manager")
 				return
 			}
 			select {
@@ -297,6 +298,7 @@ func (sd *staticDataJob) newConsumeRoutine(ctx context.Context, cancel context.C
 					return
 				}
 				if err := sd.diff(ctx, item); err != nil {
+					sd.log.Error("consume routine will exit with error: ", err.Error())
 					sd.setError(err)
 					cancel()
 					return

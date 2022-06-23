@@ -17,7 +17,7 @@ import (
 
 const (
 	maxConnPollSize = 5000
-	timeout         = 5 * time.Second
+	timeout         = 20 * time.Second
 	retryTimes      = 5
 	retryDuration   = 10 * time.Second
 	buffLengthRatio = 100

@@ -8,6 +8,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/x/bsonx"
+	"strings"
 )
 
 const (
@@ -276,7 +277,7 @@ func (r *record) getRecentTs() (int, error) {
 	return int(diff.Ts), nil
 }
 
-func (r *record) getMetaDiff() ([]*diffItem, error) {
+func (r *record) getAccountMetaDiff() ([]*diffItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -291,7 +292,51 @@ func (r *record) getMetaDiff() ([]*diffItem, error) {
 		if err := cursor.Decode(&di); err != nil {
 			return nil, err
 		}
-		res = append(res, &di)
+		if di.Ns == "admin.system.users" {
+			res = append(res, &di)
+		}
+	}
+	return res, nil
+}
+func (r *record) getJsMetaDiff() ([]*diffItem, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cursor, err := r.dstClient.Database(r.outDb).Collection(diffMetaCollection).Find(ctx, bson.D{},
+		options.Find().SetMaxTime(timeout))
+	if err != nil {
+		return nil, err
+	}
+	res := make([]*diffItem, 0)
+	for cursor.Next(ctx) {
+		var di diffItem
+		if err := cursor.Decode(&di); err != nil {
+			return nil, err
+		}
+		if strings.Contains(di.Ns, ".system.js") {
+			res = append(res, &di)
+		}
+	}
+	return res, nil
+}
+func (r *record) getShardMetaDiff() ([]*diffItem, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cursor, err := r.dstClient.Database(r.outDb).Collection(diffMetaCollection).Find(ctx, bson.D{},
+		options.Find().SetMaxTime(timeout))
+	if err != nil {
+		return nil, err
+	}
+	res := make([]*diffItem, 0)
+	for cursor.Next(ctx) {
+		var di diffItem
+		if err := cursor.Decode(&di); err != nil {
+			return nil, err
+		}
+		if di.Ns == "config.collections" {
+			res = append(res, &di)
+		}
 	}
 	return res, nil
 }
@@ -319,6 +364,9 @@ func (r *record) getTagsDiff() ([]*tagDoc, error) {
 		srcData, err := findById(ctx, r.srcClient, di.Ns, di.Id)
 		if err != nil {
 			return nil, err
+		}
+		if di.Ns != "config.collections" {
+			continue
 		}
 		var doc tagDoc
 		doc.Ns, _ = srcData["ns"].(string)

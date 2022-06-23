@@ -108,7 +108,11 @@ func (ph *progressHelper) getProgressPercent() int {
 	if ph.totalCount == 0 {
 		return 0
 	}
-	return int(ph.finishCount * 100 / ph.totalCount)
+	p := int(ph.finishCount * 100 / ph.totalCount)
+	if p > 100 {
+		p = 100
+	}
+	return p
 }
 
 func (ph *progressHelper) getNsProgress() string {

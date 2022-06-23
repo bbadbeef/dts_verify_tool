@@ -120,7 +120,7 @@ func displayAccount(r *record, b *bytes.Buffer) {
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "account compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "account diff"))
 
-			items, err := r.getMetaDiff()
+			items, err := r.getAccountMetaDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -149,7 +149,7 @@ func displayShard(r *record, b *bytes.Buffer) {
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "shard key compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "shard key diff"))
 
-			items, err := r.getMetaDiff()
+			items, err := r.getShardMetaDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -177,7 +177,7 @@ func displayJs(r *record, b *bytes.Buffer) {
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "javascript compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "javascript diff"))
 
-			items, err := r.getMetaDiff()
+			items, err := r.getJsMetaDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -222,8 +222,8 @@ func displayTag(r *record, b *bytes.Buffer) {
 
 func displayData(r *record, b *bytes.Buffer, status *taskStatus) {
 	if status.Step == "staticDataJob" {
-		b.WriteString(fmt.Sprintf("%-20s %d\n", "progress:", status.Progress))
-		b.WriteString(fmt.Sprintf("%-20s %s\n", "finish namespace:", status.FinishNsCnt))
+		b.WriteString(fmt.Sprintf("%-20s %d\n", "progress(%):", status.Progress))
+		b.WriteString(fmt.Sprintf("%-20s %s\n", "finished/total(namespace):", status.FinishNsCnt))
 	}
 
 	for {

@@ -10,6 +10,11 @@ import (
 	"sync"
 )
 
+type nss struct {
+	db         string
+	collection string
+}
+
 type countCompareJob struct {
 	assistJob
 	srcCount     map[string]int64
@@ -54,42 +59,16 @@ func (cc *countCompareJob) getCount(ctx context.Context, c *mongo.Collection) (i
 
 func (cc *countCompareJob) do() (bool, error) {
 	cc.log.Info("begin count compare")
-	type nss struct {
-		db         string
-		collection string
-	}
-	var e error
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcCh := make(chan *nss, cc.parameter.SrcConcurrency)
 	dstCh := make(chan *nss, cc.parameter.DstConcurrency)
 	var wg sync.WaitGroup
-	wg.Add(cc.parameter.SrcConcurrency + cc.parameter.DstConcurrency)
-	countGetter := func(c *mongo.Client, ch chan *nss, res map[string]int64) {
-		defer wg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ns, ok := <-ch:
-				if !ok {
-					return
-				}
-				count, err := cc.getCount(ctx, c.Database(ns.db).Collection(ns.collection))
-				if err != nil {
-					e = err
-					cancel()
-					return
-				}
-				res[ns.db+"."+ns.collection] = count
-			}
-		}
-	}
 	for i := 0; i < cc.parameter.SrcConcurrency; i++ {
-		go countGetter(cc.srcClient, srcCh, cc.srcCount)
+		go cc.countGetter(ctx, cancel, cc.srcClient, srcCh, cc.srcCount, &wg)
 	}
 	for i := 0; i < cc.parameter.DstConcurrency; i++ {
-		go countGetter(cc.dstClient, dstCh, cc.dstCount)
+		go cc.countGetter(ctx, cancel, cc.dstClient, dstCh, cc.dstCount, &wg)
 	}
 	var sendWg sync.WaitGroup
 	sendWg.Add(2)
@@ -124,8 +103,8 @@ func (cc *countCompareJob) do() (bool, error) {
 	close(dstCh)
 	wg.Wait()
 
-	if e != nil {
-		return false, e
+	if cc.error() != nil {
+		return false, cc.error()
 	}
 
 	cc.log.Info("count compare finish")
@@ -145,4 +124,27 @@ func (cc *countCompareJob) do() (bool, error) {
 	cc.setData("srcCount", cc.srcCount)
 	cc.setData("dstCount", cc.dstCount)
 	return true, nil
+}
+
+func (cc *countCompareJob) countGetter(ctx context.Context, cancel context.CancelFunc, c *mongo.Client,
+	ch chan *nss, res map[string]int64, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ns, ok := <-ch:
+			if !ok {
+				return
+			}
+			count, err := cc.getCount(ctx, c.Database(ns.db).Collection(ns.collection))
+			if err != nil {
+				cc.setError(err)
+				cancel()
+				return
+			}
+			res[ns.db+"."+ns.collection] = count
+		}
+	}
 }

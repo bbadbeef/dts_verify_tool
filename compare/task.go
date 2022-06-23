@@ -39,8 +39,13 @@ type Task struct {
 }
 
 // NewTask ...
-func NewTask(l *logrus.Logger, para *Parameter) *Task {
+func NewTask(para *Parameter) *Task {
 	id := utils.GenTaskId()
+	w, err := utils.GetRotateWriter()
+	if err != nil {
+		return nil
+	}
+	l := utils.NewLogger(w, id)
 	l.Infof("create task: %s", id)
 
 	return &Task{id: id, l: l, p: para}

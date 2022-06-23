@@ -39,8 +39,9 @@ func init() {
 - show_task_info: 查看任务执行信息`)
 	flag.StringVar(&srcUrl, "src_uri", "", `源数据库url
 	示例 mongodb://mongouser:password@8.8.8.8:27017/?readPerference=secondaryPreferred`)
-	flag.StringVar(&srcMongodUrl, "src_mongod_uri", "", `源端mongod url，每个分片用分号隔开。
-	示例 mongodb://mongouser:password@8.8.8.8:27017/?readPerference=secondaryPreferred;mongodb://mongouser:password@9.9.9.9:27017/?readPerference=secondaryPreferred`)
+	flag.StringVar(&srcMongodUrl, "src_mongod_uri", "", "源端mongod url，每个分片用分号隔开。\n"+
+		"示例 mongodb://mongouser:password@8.8.8.8:27017/?readPerference=secondaryPreferred;"+
+		"mongodb://mongouser:password@9.9.9.9:27017/?readPerference=secondaryPreferred")
 	flag.StringVar(&dstUrl, "dst_uri", "", `目的数据库url
 	示例 mongodb://mongouser:password@8.8.8.8:27017/`)
 	flag.StringVar(&verify, "verify", "", `校验类型
@@ -56,8 +57,10 @@ func init() {
 - data_db_all: 校验指定db/collection全量数据+增量数据
 - all: 校验以上所有项`)
 	flag.StringVar(&resultDb, "verify_result_db", "dts_verify_result", "结果存放db名")
-	flag.StringVar(&specifiedDb, "specified_db", "", "需要校验的db，多个使用','分隔，当 -verify 指定为 data_db_* 时生效")
-	flag.StringVar(&specifiedNs, "specified_col", "", "需要校验的集合，多个使用','分隔，当 -verify 指定为 data_db_* 时生效")
+	flag.StringVar(&specifiedDb, "specified_db", "", "需要校验的db，多个使用','分隔，"+
+		"当 -verify 指定为 data_db_* 时生效")
+	flag.StringVar(&specifiedNs, "specified_col", "", "需要校验的集合，多个使用','分隔，"+
+		"当 -verify 指定为 data_db_* 时生效")
 	flag.IntVar(&srcConcurrency, "src_concurrency", 0, "源端最大并发数，默认10")
 	flag.IntVar(&dstConcurrency, "dst_concurrency", 0, "目的端最大并发数，默认100")
 	flag.IntVar(&sample, "sample", 0, "抽样比例 (0,100),不指定表示取全量数据")
@@ -73,15 +76,13 @@ func init() {
 func handleSignal() {
 	c := make(chan os.Signal)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGSEGV,
-		syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
+		syscall.SIGQUIT)
 	go func() {
 		for s := range c {
 			switch s {
 			case syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGSEGV:
 				utils.GlobalLogger.Warnf("received os signal: %v, will exited", s)
 				utils.GracefullyExit()
-			case syscall.SIGUSR1:
-			case syscall.SIGUSR2:
 			default:
 			}
 		}
@@ -115,26 +116,45 @@ func needConfirm() {
 	}
 }
 
+func checkUrl() {
+	if len(srcUrl) == 0 || len(dstUrl) == 0 {
+		fmt.Println("invalid argument, src_uri and dst_uri must be specified")
+		flag.Usage()
+		os.Exit(0)
+	}
+	if _, ok := compare.TaskStep[verify]; runMode == "compare" && !ok {
+		fmt.Println("invalid argument, verify illegal")
+		flag.Usage()
+		os.Exit(0)
+	}
+	if verify == "data_db_content" || verify == "data_db_all" {
+		if len(specifiedDb) == 0 && len(specifiedNs) == 0 {
+			fmt.Println("invalid argument, db or ns need specified")
+			flag.Usage()
+			os.Exit(0)
+		}
+	}
+}
+
+func checkSample() {
+	if sample < 0 || sample > 100 {
+		fmt.Println("invalid argument, sample illegal")
+		flag.Usage()
+		os.Exit(0)
+	}
+	if sample > 0 {
+		if verify == "data_all" || verify == "data_db_all" || verify == "all" {
+			fmt.Println("invalid argument, sample compare not support this compare type")
+			flag.Usage()
+			os.Exit(0)
+		}
+	}
+}
+
 func checkParam() {
 	switch runMode {
 	case "compare", "resume":
-		if len(srcUrl) == 0 || len(dstUrl) == 0 {
-			fmt.Println("invalid argument, src_uri and dst_uri must be specified")
-			flag.Usage()
-			os.Exit(0)
-		}
-		if _, ok := compare.TaskStep[verify]; runMode == "compare" && !ok {
-			fmt.Println("invalid argument, verify illegal")
-			flag.Usage()
-			os.Exit(0)
-		}
-		if verify == "data_db_content" || verify == "data_db_all" {
-			if len(specifiedDb) == 0 && len(specifiedNs) == 0 {
-				fmt.Println("invalid argument, db or ns need specified")
-				flag.Usage()
-				os.Exit(0)
-			}
-		}
+		checkUrl()
 		if srcConcurrency == 0 {
 			srcConcurrency = 10
 		}
@@ -146,18 +166,7 @@ func checkParam() {
 			flag.Usage()
 			os.Exit(0)
 		}
-		if sample < 0 || sample > 100 {
-			fmt.Println("invalid argument, sample illegal")
-			flag.Usage()
-			os.Exit(0)
-		}
-		if sample > 0 {
-			if verify == "data_all" || verify == "data_db_all" || verify == "all" {
-				fmt.Println("invalid argument, sample compare not support this compare type")
-				flag.Usage()
-				os.Exit(0)
-			}
-		}
+		checkSample()
 	case "show_config":
 	case "flush_config":
 		if srcConcurrency == 0 && dstConcurrency == 0 {
@@ -175,11 +184,11 @@ func checkParam() {
 }
 
 func initLog() *logrus.Logger {
-	w, err := utils.GetRotateWriter("compare.log")
+	w, err := utils.GetRotateWriter()
 	if err != nil {
 		log.Panic(err)
 	}
-	return utils.NewLogger(w)
+	return utils.NewLogger(w, "")
 }
 
 func main() {
@@ -213,47 +222,8 @@ func main() {
 		l.Infof("tool start, mode: %s ...", runMode)
 		httpserver.Start()
 
-		para := &compare.Parameter{
-			SrcUrl: srcUrl,
-			SrcMongodUrl: func() []string {
-				res := make([]string, 0)
-				uris := strings.Split(srcMongodUrl, ";")
-				for _, uri := range uris {
-					if len(uri) != 0 {
-						res = append(res, uri)
-					}
-				}
-				return res
-			}(),
-			DstUrl:      dstUrl,
-			CompareType: verify,
-			SpecifiedDb: func() []string {
-				res := make([]string, 0)
-				dbs := strings.Split(specifiedDb, ",")
-				for _, db := range dbs {
-					if len(db) != 0 {
-						res = append(res, db)
-					}
-				}
-				return res
-			}(),
-			SpecifiedNs: func() []string {
-				res := make([]string, 0)
-				nss := strings.Split(specifiedNs, ",")
-				for _, ns := range nss {
-					if len(ns) != 0 {
-						res = append(res, ns)
-					}
-				}
-				return res
-			}(),
-			ResultDb:       resultDb,
-			SrcConcurrency: srcConcurrency,
-			DstConcurrency: dstConcurrency,
-			RunMode:        runMode,
-			Sample:         sample,
-		}
-		task := compare.NewTask(l, para)
+		para := pacPara()
+		task := compare.NewTask(para)
 		if err := task.Init(); err != nil {
 			l.Error("run init error: ", err.Error())
 			fmt.Println("init task error: ", err.Error())
@@ -269,5 +239,48 @@ func main() {
 		task.SetStatus(compare.StatusSuccess)
 		fmt.Println("task success, now exit")
 		os.Stdout.WriteString(task.Display())
+	}
+}
+
+func pacPara() *compare.Parameter {
+	return &compare.Parameter{
+		SrcUrl: srcUrl,
+		SrcMongodUrl: func() []string {
+			res := make([]string, 0)
+			uris := strings.Split(srcMongodUrl, ";")
+			for _, uri := range uris {
+				if len(uri) != 0 {
+					res = append(res, uri)
+				}
+			}
+			return res
+		}(),
+		DstUrl:      dstUrl,
+		CompareType: verify,
+		SpecifiedDb: func() []string {
+			res := make([]string, 0)
+			dbs := strings.Split(specifiedDb, ",")
+			for _, db := range dbs {
+				if len(db) != 0 {
+					res = append(res, db)
+				}
+			}
+			return res
+		}(),
+		SpecifiedNs: func() []string {
+			res := make([]string, 0)
+			nss := strings.Split(specifiedNs, ",")
+			for _, ns := range nss {
+				if len(ns) != 0 {
+					res = append(res, ns)
+				}
+			}
+			return res
+		}(),
+		ResultDb:       resultDb,
+		SrcConcurrency: srcConcurrency,
+		DstConcurrency: dstConcurrency,
+		RunMode:        runMode,
+		Sample:         sample,
 	}
 }
