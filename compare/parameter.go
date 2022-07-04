@@ -4,24 +4,63 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"mongo_compare/utils"
-	"os"
+	"github.com/bbadbeef/dts_verify_tool/utils"
 )
+
+const (
+	EventDiffRecord = iota + 1
+)
+
+const (
+	Update = iota
+	Undo
+)
+
+// Event ...
+type Event struct {
+	EventType int
+	Data      interface{}
+}
+
+var NotifyTypeName = map[int]string{
+	Account:   "account",
+	Index:     "index",
+	ShardKey:  "shardkey",
+	Tag:       "tag",
+	Js:        "js",
+	Namespace: "schema",
+	Count:     "count",
+	Data:      "data",
+}
+
+// DiffRecord ...
+type DiffRecord struct {
+	Typ    string
+	Action int
+	Ns     string
+	SrcId  interface{}
+	DstId  interface{}
+	SrcVal interface{}
+	DstVal interface{}
+}
 
 // Parameter ...
 type Parameter struct {
-	SrcUrl         string   `json:"src_uri"`
-	SrcMongodUrl   []string `json:"src_mongod_uri"`
-	DstUrl         string   `json:"dst_uri"`
-	CompareType    string   `json:"verify"`
-	SpecifiedDb    []string `json:"specified_db,omitempty"`
-	SpecifiedNs    []string `json:"specified_ns,omitempty"`
-	SrcConcurrency int      `json:"src_concurrency"`
-	DstConcurrency int      `json:"dst_concurrency"`
-	ResultDb       string   `json:"verify_result_db"`
-	Sample         int      `json:"sample,omitempty"`
-	RunMode        string   `json:"-"`
-	output         *os.File
+	Id             string       `json:"id"`
+	SrcUrl         string       `json:"src_uri"`
+	SrcMongodUrl   []string     `json:"src_mongod_uri"`
+	DstUrl         string       `json:"dst_uri"`
+	CompareType    string       `json:"verify"`
+	CompareExtra   uint         `json:"compare_extra"`
+	SpecifiedDb    []string     `json:"specified_db,omitempty"`
+	SpecifiedNs    []string     `json:"specified_ns,omitempty"`
+	SrcConcurrency int          `json:"src_concurrency"`
+	DstConcurrency int          `json:"dst_concurrency"`
+	ResultDb       string       `json:"verify_result_db"`
+	Sample         int          `json:"sample,omitempty"`
+	RunMode        string       `json:"-"`
+	FiniteFunc     func() bool  `json:"-"`
+	CBFunc         func(*Event) `json:"-"`
 	dirty          bool
 }
 

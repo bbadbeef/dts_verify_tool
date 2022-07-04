@@ -15,7 +15,8 @@ type nsJob struct {
 }
 
 func (nj *nsJob) name() string {
-	return reflect.TypeOf(*nj).Name()
+	//return reflect.TypeOf(*nj).Name()
+	return "获取库表"
 }
 
 func (nj *nsJob) init() error {
@@ -87,7 +88,7 @@ func (nj *nsJob) listCollection() (bool, error) {
 
 	var wg sync.WaitGroup
 	wg.Add(nj.parameter.SrcConcurrency + nj.parameter.DstConcurrency)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(nj.ctx)
 	defer cancel()
 	var e error
 	srcCh := make(chan string, nj.parameter.SrcConcurrency)
@@ -164,7 +165,8 @@ type nsFilterBaseJob struct {
 }
 
 func (nfj *nsFilterBaseJob) name() string {
-	return nfj.step
+	//return nfj.step
+	return "库表信息"
 }
 
 func (nfj *nsFilterBaseJob) init() error {
@@ -182,7 +184,7 @@ func (nfj *nsFilterBaseJob) init() error {
 		return fmt.Errorf("get destination namespace data error")
 	}
 
-	if err := nfj.updateStep(nfj.step); err != nil {
+	if err := nfj.updateStep(nfj.name()); err != nil {
 		return err
 	}
 	return nil
@@ -213,20 +215,30 @@ func (nfj *nsFilterBaseJob) do() (bool, error) {
 	nfj.log.Info("source cleaned ns: ", nfj.srcNsCleaned)
 	nfj.log.Info("destination cleaned ns: ", nfj.dstNsCleaned)
 
-	same, diff := diffNs(nfj.srcNsCleaned, nfj.dstNsCleaned)
-	if !same {
-		if err := nfj.r.saveResult(&compareResult{
+	if nfj.tName == "data" && (nfj.parameter.CompareExtra == 0 || nfj.parameter.CompareExtra&Namespace != 0) {
+		diff := diffNs(nfj.srcNsCleaned, nfj.dstNsCleaned)
+		if err := nfj.r.saveResult(&JobResult{
 			Task:      nfj.tName,
-			Step:      nfj.step,
-			Identical: "no",
+			Step:      nfj.name(),
+			Identical: len(diff) == 0,
 			Diff:      diff,
 		}); err != nil {
 			nfj.log.Errorf("save result error: %s", err.Error())
 		}
+		nfj.notifyDiff(Namespace, Update, diff)
 	}
 	nfj.setData("srcNsCleaned", nfj.srcNsCleaned)
 	nfj.setData("dstNsCleaned", nfj.dstNsCleaned)
 	return true, nil
+}
+
+type nsFilterIndexJob struct {
+	nsFilterBaseJob
+}
+
+func (na *nsFilterIndexJob) polymorphism() {
+	na.nsFilterBaseJob.polymorphism()
+	na.tName = "index"
 }
 
 type nsFilterAccountJob struct {
@@ -234,7 +246,8 @@ type nsFilterAccountJob struct {
 }
 
 func (na *nsFilterAccountJob) name() string {
-	return na.step
+	// return na.step
+	return "库表信息"
 }
 
 func (na *nsFilterAccountJob) polymorphism() {
@@ -256,7 +269,8 @@ type nsFilterShardKeyJob struct {
 }
 
 func (ns *nsFilterShardKeyJob) name() string {
-	return ns.step
+	//return ns.step
+	return "库表信息"
 }
 
 func (ns *nsFilterShardKeyJob) polymorphism() {
@@ -272,7 +286,8 @@ type nsFilterTagJob struct {
 }
 
 func (nt *nsFilterTagJob) name() string {
-	return nt.step
+	//return nt.step
+	return "库表信息"
 }
 
 func (nt *nsFilterTagJob) polymorphism() {
@@ -288,7 +303,8 @@ type nsFilterJavascriptJob struct {
 }
 
 func (nj *nsFilterJavascriptJob) name() string {
-	return nj.step
+	//return nj.step
+	return "库表信息"
 }
 
 func (nj *nsFilterJavascriptJob) polymorphism() {
@@ -310,7 +326,8 @@ type nsFilterSpecifiedJob struct {
 }
 
 func (ns *nsFilterSpecifiedJob) name() string {
-	return ns.step
+	//return ns.step
+	return "库表信息"
 }
 
 func (ns *nsFilterSpecifiedJob) polymorphism() {
