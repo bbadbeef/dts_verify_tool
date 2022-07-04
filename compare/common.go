@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"mongo_compare/utils"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bbadbeef/dts_verify_tool/utils"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
 const (
@@ -41,6 +44,14 @@ var (
 	systemDb         = []string{"admin", "local", "config"}
 	systemCollection = []string{"system.*"}
 )
+
+type MetaDiffItem struct {
+	Ns     string
+	SrcId  interface{}
+	SrcVal interface{}
+	DstId  interface{}
+	DstVal interface{}
+}
 
 type oplogDoc struct {
 	Op string
@@ -72,7 +83,8 @@ type shardDoc struct {
 }
 
 func newMongoClient(uri string) (*mongo.Client, error) {
-	clientOptions := options.Client().ApplyURI(uri).SetMaxPoolSize(maxConnPollSize).SetMaxConnIdleTime(time.Minute)
+	clientOptions := options.Client().ApplyURI(uri).SetMaxPoolSize(maxConnPollSize).SetMaxConnIdleTime(time.Minute).
+		SetReadPreference(readpref.SecondaryPreferred())
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	client, err := mongo.Connect(ctx, clientOptions)
@@ -98,6 +110,35 @@ func showCollections(c *mongo.Client, db string) ([]string, error) {
 	return c.Database(db).ListCollectionNames(ctx, bson.D{})
 }
 
+func isView(c *mongo.Client, db, coll string) bool {
+	err := c.Database(db).RunCommand(context.Background(), bson.M{"collStats": coll}).Err()
+	if err != nil {
+		return true
+	}
+	return false
+}
+
+func getIndexes(ctx context.Context, c *mongo.Client, db, coll string) (map[string]map[string]interface{}, error) {
+	subCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cursor, err := c.Database(db).Collection(coll).Indexes().List(subCtx, options.ListIndexes().SetMaxTime(timeout))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(context.Background())
+	var results []bson.M
+	if err = cursor.All(subCtx, &results); err != nil {
+		return nil, err
+	}
+	idxMap := make(map[string]map[string]interface{})
+	for _, idx := range results {
+		if name, ok := idx["name"].(string); ok {
+			idxMap[name] = idx
+		}
+	}
+	return idxMap, nil
+}
+
 func findById(ctx context.Context, c *mongo.Client, ns string, id interface{}) (bson.M, error) {
 	subCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -119,6 +160,25 @@ func findById(ctx context.Context, c *mongo.Client, ns string, id interface{}) (
 	}
 	return val, nil
 }
+
+func findByIdWithRetry(ctx context.Context, c *mongo.Client, ns string,
+	id interface{}) (bson.M, error) {
+	var res bson.M
+	var err error
+	for i := 0; i < retryTimes; i++ {
+		res, err = findById(ctx, c, ns, id)
+		if err != nil {
+			time.Sleep(retryDuration)
+			continue
+		}
+		break
+	}
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 func filterOplog(oplog *oplogDoc, dbs, nss []string) bool {
 	//if oplog.Op != "i" && oplog.Op != "u" && oplog.Op != "d" {
 	//	return false
@@ -149,10 +209,11 @@ func filterOplog(oplog *oplogDoc, dbs, nss []string) bool {
 	return true
 }
 
-func parseOplog(doc *oplogDoc) *diffItem {
-	di := &diffItem{
-		Ns: doc.Ns,
-		Ts: doc.Ts.Unix(),
+func parseOplog(doc *oplogDoc) *DiffItem {
+	di := &DiffItem{
+		Ns:        doc.Ns,
+		Ts:        doc.Ts.Unix(),
+		Confirmed: false,
 	}
 	if id, ok := doc.O2["_id"]; ok {
 		di.Id = id
@@ -180,6 +241,9 @@ func compareAccount(a, b bson.M) bool {
 	}
 	src.sort()
 	dst.sort()
+	if strings.HasPrefix(src.Id, "cmgo-") || strings.HasPrefix(dst.Id, "cmgo-") {
+		return true
+	}
 	return reflect.DeepEqual(src, dst)
 }
 
@@ -196,7 +260,7 @@ func compareShard(a, b bson.M) bool {
 	return reflect.DeepEqual(src, dst)
 }
 
-func diffNs(src, dst map[string][]string) (bool, map[string]interface{}) {
+func diffNs(src, dst map[string][]string) []*MetaDiffItem {
 	srcNs := make(map[string]struct{})
 	dstNs := make(map[string]struct{})
 	for db, coll := range src {
@@ -206,49 +270,66 @@ func diffNs(src, dst map[string][]string) (bool, map[string]interface{}) {
 	}
 	for db, coll := range dst {
 		for _, c := range coll {
-			ns := fmt.Sprintf("%s.%s", db, c)
-			if _, ok := srcNs[ns]; ok {
-				delete(srcNs, ns)
-				continue
-			}
-			dstNs[ns] = struct{}{}
+			dstNs[fmt.Sprintf("%s.%s", db, c)] = struct{}{}
 		}
 	}
-	resSrc := make([]string, 0)
-	resDst := make([]string, 0)
+	res := make([]*MetaDiffItem, 0)
 	for k, _ := range srcNs {
-		resSrc = append(resSrc, k)
+		if _, ok := dstNs[k]; !ok {
+			res = append(res, &MetaDiffItem{
+				Ns:    k,
+				SrcId: k,
+				DstId: "",
+			})
+		}
 	}
-	for k, _ := range dstNs {
-		resDst = append(resDst, k)
-	}
-	return len(resSrc) == 0 && len(resDst) == 0, map[string]interface{}{
-		"source":      resSrc,
-		"destination": resDst,
-	}
+	return res
 }
 
-func diffCount(src, dst map[string]int64) map[string]interface{} {
-	resSrc := make(map[string]int64)
-	resDst := make(map[string]int64)
+func diffCount(src, dst map[string]int64) []*MetaDiffItem {
+	res := make([]*MetaDiffItem, 0)
 	for ns, count := range src {
 		if dst[ns] == count {
 			continue
 		}
-		resSrc[ns] = count
-		resDst[ns] = dst[ns]
+		res = append(res, &MetaDiffItem{
+			Ns:     ns,
+			SrcId:  "",
+			DstId:  "",
+			SrcVal: count,
+			DstVal: dst[ns],
+		})
 	}
-	for ns, count := range dst {
-		if src[ns] == count {
-			continue
+	return res
+}
+
+func diffIndex(src, dst map[string]map[string]map[string]interface{}) []*MetaDiffItem {
+	res := make([]*MetaDiffItem, 0)
+	for ns, srcIndexMap := range src {
+		for srcIndexName, srcIndexItem := range srcIndexMap {
+			if dst[ns] == nil || dst[ns][srcIndexName] == nil {
+				res = append(res, &MetaDiffItem{
+					Ns:     ns,
+					SrcId:  srcIndexName,
+					SrcVal: srcIndexItem,
+					DstId:  "",
+					DstVal: "",
+				})
+				continue
+			}
+			if compareDoc(srcIndexItem, dst[ns][srcIndexName]) {
+				continue
+			}
+			res = append(res, &MetaDiffItem{
+				Ns:     ns,
+				SrcId:  srcIndexName,
+				SrcVal: srcIndexItem,
+				DstId:  srcIndexName,
+				DstVal: dst[ns][srcIndexName],
+			})
 		}
-		resSrc[ns] = src[ns]
-		resDst[ns] = dst[ns]
 	}
-	return map[string]interface{}{
-		"source":      resSrc,
-		"destination": resDst,
-	}
+	return res
 }
 
 func inList(item string, list []string) bool {
@@ -277,4 +358,37 @@ func deepCopy(m map[string][]string) (res map[string][]string) {
 	b, _ := json.Marshal(&m)
 	json.Unmarshal(b, &res)
 	return
+}
+
+func truncatedStr(raw []byte) string {
+	if len(raw) > 1024 {
+		raw = raw[:1024]
+		raw = append(raw, []byte("...")...)
+	}
+	return string(raw)
+}
+
+func marshalId(id interface{}) string {
+	if id == nil {
+		return ""
+	}
+	switch id.(type) {
+	case primitive.ObjectID:
+		return id.(primitive.ObjectID).String()
+	default:
+		return fmt.Sprintf("%v", id)
+	}
+}
+
+func marshalVal(val interface{}) string {
+	if val == nil {
+		return ""
+	}
+	switch val.(type) {
+	case string, int, uint, int64, uint64:
+		return fmt.Sprintf("%v", val)
+	default:
+	}
+	v, _ := bson.MarshalExtJSON(val, true, true)
+	return truncatedStr(v)
 }

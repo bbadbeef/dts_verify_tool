@@ -3,13 +3,11 @@ package compare
 import (
 	"context"
 	"fmt"
+	"github.com/bbadbeef/dts_verify_tool/utils"
 	"github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"math"
-	"mongo_compare/utils"
-	"reflect"
 	"sync"
 	"time"
 )
@@ -22,10 +20,12 @@ func (adj *accountDataJob) polymorphism() {
 	adj.helper = &staticDataAccountHelper{}
 	adj.helper.setRecord(adj.r)
 	adj.helper.setCb(adj)
+	adj.helper.setType(Account)
 }
 
 func (adj *accountDataJob) name() string {
-	return reflect.TypeOf(accountDataJob{}).Name()
+	//return reflect.TypeOf(accountDataJob{}).Name()
+	return "账号"
 }
 
 type shardKeyDataJob struct {
@@ -36,9 +36,11 @@ func (sdj *shardKeyDataJob) polymorphism() {
 	sdj.helper = &staticDataShardHelper{}
 	sdj.helper.setRecord(sdj.r)
 	sdj.helper.setCb(sdj)
+	sdj.helper.setType(ShardKey)
 }
 func (sdj *shardKeyDataJob) name() string {
-	return reflect.TypeOf(shardKeyDataJob{}).Name()
+	//return reflect.TypeOf(shardKeyDataJob{}).Name()
+	return "片键"
 }
 
 type tagDataJob struct {
@@ -46,13 +48,15 @@ type tagDataJob struct {
 }
 
 func (tdj *tagDataJob) name() string {
-	return reflect.TypeOf(tagDataJob{}).Name()
+	//return reflect.TypeOf(tagDataJob{}).Name()
+	return "tag"
 }
 
 func (tdj *tagDataJob) polymorphism() {
 	tdj.helper = &staticDataMetaHelper{}
 	tdj.helper.setRecord(tdj.r)
 	tdj.helper.setCb(tdj)
+	tdj.helper.setType(Tag)
 }
 
 type javascriptDataJob struct {
@@ -60,13 +64,15 @@ type javascriptDataJob struct {
 }
 
 func (jdj *javascriptDataJob) name() string {
-	return reflect.TypeOf(javascriptDataJob{}).Name()
+	//return reflect.TypeOf(javascriptDataJob{}).Name()
+	return "js"
 }
 
 func (jdj *javascriptDataJob) polymorphism() {
 	jdj.helper = &staticDataMetaHelper{}
 	jdj.helper.setRecord(jdj.r)
 	jdj.helper.setCb(jdj)
+	jdj.helper.setType(Js)
 }
 
 type staticDataJob struct {
@@ -91,13 +97,15 @@ type staticDataJob struct {
 }
 
 func (sd *staticDataJob) name() string {
-	return reflect.TypeOf(staticDataJob{}).Name()
+	//return reflect.TypeOf(staticDataJob{}).Name()
+	return "全量"
 }
 
 func (sd *staticDataJob) polymorphism() {
 	sd.helper = &staticDataBaseHelper{}
 	sd.helper.setRecord(sd.r)
 	sd.helper.setCb(sd)
+	sd.helper.setType(Data)
 }
 
 func (sd *staticDataJob) init() error {
@@ -180,47 +188,50 @@ func (sd *staticDataJob) compareItem(src, dst bson.M) bool {
 	return sd.helper.compareItem(src, dst)
 }
 
-func (sd *staticDataJob) saveDiff(di *diffItem, src, dst bson.M) error {
+func (sd *staticDataJob) saveDiff(di *DiffItem, src, dst bson.M) error {
+	sd.notifyDiff(sd.helper.typ(), Update, []*MetaDiffItem{{
+		Ns:    di.Ns,
+		SrcId: di.Id,
+		DstId: func() interface{} {
+			if len(dst) == 0 {
+				return nil
+			}
+			return di.Id
+		}(),
+		SrcVal: src,
+		DstVal: func() interface{} {
+			if len(dst) == 0 {
+				return nil
+			}
+			return dst
+		}(),
+	}})
 	return sd.helper.saveDiff(di, src, dst)
 }
 
 func (sd *staticDataJob) diff(ctx context.Context, item *productItem) error {
-	var equal = true
-	res := sd.dstClient.Database(item.db).Collection(item.collection).FindOne(ctx, bson.D{{"_id", item.id}},
-		options.FindOne().SetMaxTime(timeout))
-	if res.Err() != nil && res.Err() != mongo.ErrNoDocuments {
-		return res.Err()
+	res, err := findByIdWithRetry(ctx, sd.dstClient, item.db+"."+item.collection, item.id)
+	if err != nil {
+		sd.log.Error("query on destination error: ", err.Error())
+		return err
 	}
-	var dstVal bson.M
-	if res.Err() == mongo.ErrNoDocuments {
-		// fmt.Printf("src dirty not found, ns: %s.%s, val: %v\n", item.db, item.collection, item.val)
-		equal = false
-	} else {
-		if err := res.Decode(&dstVal); err != nil {
-			return err
+
+	if res == nil || !sd.compareItem(item.val, res) {
+		di := &DiffItem{
+			Ns:        fmt.Sprintf("%s.%s", item.db, item.collection),
+			Id:        item.id,
+			Confirmed: true,
 		}
-		if !sd.compareItem(item.val, dstVal) {
-			// fmt.Println("src dirty not equal: ", item.val, "\t", dstVal)
-			equal = false
-		}
-	}
-	if !equal {
-		di := &diffItem{
-			Ns: fmt.Sprintf("%s.%s", item.db, item.collection),
-			Id: item.id,
-		}
-		if err := sd.saveDiff(di, item.val, dstVal); err != nil {
+		if err := sd.saveDiff(di, item.val, res); err != nil {
 			sd.log.Errorf("save diff error: %s", err.Error())
 			return err
 		}
-		sd.equal = false
 	}
-	// fmt.Println("diff: ", equal, "\t", item.db, "\t", item.collection, "\t", item.val)
 	return nil
 }
 
 func (sd *staticDataJob) newProductRoutine(ctx context.Context, cancel context.CancelFunc) {
-	sd.log.Info("create a new product routine")
+	//sd.log.Info("create a new product routine")
 	sd.productWg.Add(1)
 	go func() {
 		unit := newRoutineUnit()
@@ -228,7 +239,7 @@ func (sd *staticDataJob) newProductRoutine(ctx context.Context, cancel context.C
 		defer func() {
 			sd.productRoutineManager.remove(unit)
 			sd.productWg.Done()
-			sd.log.Info("a product routine gone")
+			//sd.log.Info("a product routine gone")
 		}()
 		for {
 			select {
@@ -247,12 +258,14 @@ func (sd *staticDataJob) newProductRoutine(ctx context.Context, cancel context.C
 			ns := fmt.Sprintf("%s.%s", item.getDb(), item.getCollection())
 			sd.ph.addNs(ns)
 			if err := item.init(); err != nil {
+				sd.log.Errorf("item init error: %s", err.Error())
 				sd.setError(err)
 				cancel()
 				return
 			}
 			c, err := item.read(ctx, unit)
 			if err != nil {
+				sd.log.Errorf("item read error: %s", err.Error())
 				sd.setError(err)
 				cancel()
 				return
@@ -275,7 +288,7 @@ func (sd *staticDataJob) produce(ctx context.Context, cancel context.CancelFunc)
 }
 
 func (sd *staticDataJob) newConsumeRoutine(ctx context.Context, cancel context.CancelFunc) {
-	sd.log.Info("create a new consume routine")
+	//sd.log.Info("create a new consume routine")
 	sd.consumeWg.Add(1)
 	go func() {
 		unit := newRoutineUnit()
@@ -283,11 +296,11 @@ func (sd *staticDataJob) newConsumeRoutine(ctx context.Context, cancel context.C
 		defer func() {
 			sd.consumeRoutineManager.remove(unit)
 			sd.consumeWg.Done()
-			sd.log.Info("a consume routine gone")
+			//sd.log.Info("a consume routine gone")
 		}()
 		for {
 			if unit.shouldExit() {
-				sd.log.Info("consume routine will exit by routine manager")
+				//sd.log.Info("consume routine will exit by routine manager")
 				return
 			}
 			select {
@@ -331,9 +344,11 @@ func (sd *staticDataJob) adjustConcurrency(ctx context.Context, cancel context.C
 		current := sd.productRoutineManager.len()
 		desired := sd.parameter.SrcConcurrency
 		if current > desired {
+			sd.log.Infof("remove %d src concurrency", current-desired)
 			sd.productRoutineManager.sort()
 			sd.productRoutineManager.destroyN(current - desired)
 		} else if desired > current {
+			sd.log.Infof("add %d src concurrency", desired-current)
 			for i := 0; i < desired-current; i++ {
 				sd.newProductRoutine(ctx, cancel)
 			}
@@ -344,8 +359,10 @@ func (sd *staticDataJob) adjustConcurrency(ctx context.Context, cancel context.C
 		current := sd.consumeRoutineManager.len()
 		desired := sd.parameter.DstConcurrency
 		if current > desired {
+			sd.log.Infof("remove %d dst concurrency", current-desired)
 			sd.consumeRoutineManager.destroyN(current - desired)
 		} else if desired > current {
+			sd.log.Infof("add %d dst concurrency", desired-current)
 			for i := 0; i < desired-current; i++ {
 				sd.newConsumeRoutine(ctx, cancel)
 			}
@@ -390,11 +407,22 @@ func (sd *staticDataJob) flushProgress(ctx context.Context) {
 
 func (sd *staticDataJob) do() (bool, error) {
 	sd.log.Info("start static data compare")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(sd.ctx)
 	defer cancel()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
+
+	for db, coll := range sd.ns {
+		for _, c := range coll {
+			ns := fmt.Sprintf("%s.%s", db, c)
+			if inList(ns, sd.finishedNs) {
+				continue
+			}
+			sd.nsList.Push(sd.newNsReader(db, c))
+		}
+	}
+
 	go func() {
 		defer func() {
 			wg.Done()
@@ -410,32 +438,13 @@ func (sd *staticDataJob) do() (bool, error) {
 	sd.startAdjustRoutine(ctx, cancel)
 	sd.startFlushProgressRoutine(ctx)
 
-	for db, coll := range sd.ns {
-		for _, c := range coll {
-			ns := fmt.Sprintf("%s.%s", db, c)
-			if inList(ns, sd.finishedNs) {
-				continue
-			}
-			sd.nsList.Push(sd.newNsReader(db, c))
-		}
-	}
 	wg.Wait()
 
 	if sd.error() != nil {
+		sd.log.Errorf("static data do error: %s", sd.error())
 		return false, sd.error()
 	}
 
-	result := &compareResult{
-		Task:      sd.tName,
-		Step:      sd.helper.name(),
-		Identical: "yes",
-	}
-	if !sd.equal {
-		result.Identical = "no"
-	}
-	if err := sd.r.saveResult(result); err != nil {
-		return false, err
-	}
 	sd.flushProgress(context.Background())
 	sd.log.Info("static data compare finish")
 	return true, nil
@@ -444,7 +453,7 @@ func (sd *staticDataJob) do() (bool, error) {
 func (sd *staticDataJob) newNsReader(db, collection string) nsReader {
 	ns := fmt.Sprintf("%s.%s", db, collection)
 	count := sd.nsCount[ns]
-	if sd.parameter.Sample == 0 {
+	if sd.parameter.Sample == 0 || sd.parameter.Sample == 100 || sd.helper.name() != sd.name() {
 		return &nsBaseReader{
 			c:          sd.srcClient,
 			db:         db,
@@ -459,6 +468,8 @@ func (sd *staticDataJob) newNsReader(db, collection string) nsReader {
 	if sampleSize < 1 {
 		sampleSize = 1
 	}
+	skipSize := count - sampleSize
+	sd.log.Infof("namespace %s.%s count: %d, skip: %d", db, collection, count, skipSize)
 	return &nsSampleReader{
 		nsBaseReader: &nsBaseReader{
 			c:          sd.srcClient,
@@ -470,6 +481,7 @@ func (sd *staticDataJob) newNsReader(db, collection string) nsReader {
 			totalCount: count,
 		},
 		sampleSize: sampleSize,
+		skipSize:   skipSize,
 	}
 }
 
@@ -518,9 +530,10 @@ func (nr *nsBaseReader) init() error {
 func (nr *nsBaseReader) read(ctx context.Context, unit *routineUint) (bool, error) {
 	fmt.Println("start read: ", nr.db, "\t", nr.collection)
 	nr.log.Infof("start read: %s, %s", nr.db, nr.collection)
+	defer nr.cursor.Close(context.Background())
 	for nr.cursor.Next(ctx) {
 		if unit.shouldExit() {
-			nr.log.Warnf("product goroutine exit")
+			//nr.log.Warnf("product goroutine exit")
 			return false, nil
 		}
 		var val bson.M
@@ -557,11 +570,49 @@ func (nr *nsBaseReader) count() int {
 type nsSampleReader struct {
 	*nsBaseReader
 	sampleSize int64
+	skipSize   int64
 }
 
 func (nsr *nsSampleReader) init() error {
+	//var err error
+	//pipeline := []bson.D{{{"$sample", bson.D{{"size", nsr.sampleSize}}}}}
+	//nsr.cursor, err = nsr.c.Database(nsr.db).Collection(nsr.collection).Aggregate(context.Background(), pipeline)
+	//return err
 	var err error
-	pipeline := []bson.D{{{"$sample", bson.D{{"size", nsr.sampleSize}}}}}
-	nsr.cursor, err = nsr.c.Database(nsr.db).Collection(nsr.collection).Aggregate(context.Background(), pipeline)
+	nsr.cursor, err = nsr.c.Database(nsr.db).Collection(nsr.collection).Find(context.Background(), bson.D{})
 	return err
+}
+
+func (nsr *nsSampleReader) read(ctx context.Context, unit *routineUint) (bool, error) {
+	fmt.Println("start sample read: ", nsr.db, "\t", nsr.collection)
+	nsr.log.Infof("start sample read: %s, %s", nsr.db, nsr.collection)
+	defer nsr.cursor.Close(context.Background())
+	for nsr.cursor.Next(ctx) {
+		if unit.shouldExit() {
+			//nr.log.Warnf("product goroutine exit")
+			return false, nil
+		}
+		if nsr.skipSize > 0 {
+			nsr.skipSize--
+			continue
+		}
+		var val bson.M
+		if err := nsr.cursor.Decode(&val); err != nil {
+			return false, err
+		}
+		id, ok := val["_id"]
+		if !ok {
+			nsr.log.Errorf("id not found in source, ns: %s.%s, doc: %v", nsr.db, nsr.collection, val)
+			return false, fmt.Errorf("id not found")
+		}
+		item := &productItem{
+			db:         nsr.db,
+			collection: nsr.collection,
+			id:         id,
+			val:        val,
+		}
+		nsr.send(item)
+	}
+	nsr.log.Infof("sample read finish: %s, %s", nsr.db, nsr.collection)
+	return true, nil
 }

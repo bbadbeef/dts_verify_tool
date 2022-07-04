@@ -24,7 +24,8 @@ type countCompareJob struct {
 }
 
 func (cc *countCompareJob) name() string {
-	return reflect.TypeOf(*cc).Name()
+	//return reflect.TypeOf(*cc).Name()
+	return "行数"
 }
 
 func (cc *countCompareJob) init() error {
@@ -59,16 +60,18 @@ func (cc *countCompareJob) getCount(ctx context.Context, c *mongo.Collection) (i
 
 func (cc *countCompareJob) do() (bool, error) {
 	cc.log.Info("begin count compare")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(cc.ctx)
 	defer cancel()
 	srcCh := make(chan *nss, cc.parameter.SrcConcurrency)
 	dstCh := make(chan *nss, cc.parameter.DstConcurrency)
 	var wg sync.WaitGroup
+	var srcMutex sync.Mutex
+	var dstMutex sync.Mutex
 	for i := 0; i < cc.parameter.SrcConcurrency; i++ {
-		go cc.countGetter(ctx, cancel, cc.srcClient, srcCh, cc.srcCount, &wg)
+		go cc.countGetter(ctx, cancel, cc.srcClient, srcCh, cc.srcCount, &wg, &srcMutex)
 	}
 	for i := 0; i < cc.parameter.DstConcurrency; i++ {
-		go cc.countGetter(ctx, cancel, cc.dstClient, dstCh, cc.dstCount, &wg)
+		go cc.countGetter(ctx, cancel, cc.dstClient, dstCh, cc.dstCount, &wg, &dstMutex)
 	}
 	var sendWg sync.WaitGroup
 	sendWg.Add(2)
@@ -109,17 +112,23 @@ func (cc *countCompareJob) do() (bool, error) {
 
 	cc.log.Info("count compare finish")
 
-	result := &compareResult{
-		Task:      cc.tName,
-		Step:      cc.name(),
-		Identical: "yes",
-	}
-	if !reflect.DeepEqual(cc.srcCount, cc.dstCount) {
-		result.Identical = "no"
-		result.Diff = diffCount(cc.srcCount, cc.dstCount)
-	}
-	if err := cc.r.saveResult(result); err != nil {
-		cc.log.Errorf("save result error: %s", err.Error())
+	if cc.tName == "data" && (cc.parameter.CompareExtra == 0 || cc.parameter.CompareExtra&Count != 0) {
+		result := &JobResult{
+			Task:      cc.tName,
+			Step:      cc.name(),
+			Identical: true,
+		}
+		if !reflect.DeepEqual(cc.srcCount, cc.dstCount) {
+			diffs := diffCount(cc.srcCount, cc.dstCount)
+			if len(diffs) != 0 {
+				result.Identical = false
+				result.Diff = diffs
+				cc.notifyDiff(Count, Update, diffs)
+			}
+		}
+		if err := cc.r.saveResult(result); err != nil {
+			cc.log.Errorf("save result error: %s", err.Error())
+		}
 	}
 	cc.setData("srcCount", cc.srcCount)
 	cc.setData("dstCount", cc.dstCount)
@@ -127,7 +136,7 @@ func (cc *countCompareJob) do() (bool, error) {
 }
 
 func (cc *countCompareJob) countGetter(ctx context.Context, cancel context.CancelFunc, c *mongo.Client,
-	ch chan *nss, res map[string]int64, wg *sync.WaitGroup) {
+	ch chan *nss, res map[string]int64, wg *sync.WaitGroup, m *sync.Mutex) {
 	wg.Add(1)
 	defer wg.Done()
 	for {
@@ -144,7 +153,9 @@ func (cc *countCompareJob) countGetter(ctx context.Context, cancel context.Cance
 				cancel()
 				return
 			}
+			m.Lock()
 			res[ns.db+"."+ns.collection] = count
+			m.Unlock()
 		}
 	}
 }

@@ -8,10 +8,12 @@ import (
 
 type staticDataHelper interface {
 	compareItem(src, dst bson.M) bool
-	saveDiff(di *diffItem, src, dst bson.M) error
+	saveDiff(di *DiffItem, src, dst bson.M) error
 	setRecord(r *record)
 	setCb(cb callbackType)
+	setType(typ int)
 	name() string
+	typ() int
 }
 
 type callbackType interface {
@@ -21,6 +23,7 @@ type callbackType interface {
 type staticDataBaseHelper struct {
 	r  *record
 	cb callbackType
+	t  int
 }
 
 func (sdb *staticDataBaseHelper) setRecord(r *record) {
@@ -31,15 +34,23 @@ func (sdb *staticDataBaseHelper) setCb(cb callbackType) {
 	sdb.cb = cb
 }
 
+func (sdb *staticDataBaseHelper) setType(typ int) {
+	sdb.t = typ
+}
+
 func (sdb *staticDataBaseHelper) name() string {
 	return sdb.cb.name()
+}
+
+func (sdb *staticDataBaseHelper) typ() int {
+	return sdb.t
 }
 
 func (sdb *staticDataBaseHelper) compareItem(src, dst bson.M) bool {
 	return compareDoc(src, dst)
 }
 
-func (sdb *staticDataBaseHelper) saveDiff(di *diffItem, src, dst bson.M) error {
+func (sdb *staticDataBaseHelper) saveDiff(di *DiffItem, src, dst bson.M) error {
 	return sdb.r.saveDiff([]interface{}{di})
 }
 
@@ -47,7 +58,7 @@ type staticDataMetaHelper struct {
 	staticDataBaseHelper
 }
 
-func (sdb *staticDataMetaHelper) saveDiff(di *diffItem, src, dst bson.M) error {
+func (sdb *staticDataMetaHelper) saveDiff(di *DiffItem, src, dst bson.M) error {
 	return sdb.r.saveMetaDiff([]interface{}{di})
 }
 

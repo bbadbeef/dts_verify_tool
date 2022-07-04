@@ -3,8 +3,8 @@ package compare
 import (
 	"bytes"
 	"fmt"
+	"github.com/bbadbeef/dts_verify_tool/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"mongo_compare/utils"
 	"time"
 )
 
@@ -23,7 +23,7 @@ func DisplayTaskStatus(p *Parameter) string {
 }
 
 func getTaskStatusByRecord(r *record) string {
-	status, err := r.getStatus()
+	status, err := r.GetStatus()
 	if err != nil {
 		return utils.Red(fmt.Sprintf("ERROR: %s\n", err.Error()))
 	}
@@ -66,14 +66,14 @@ func getTaskStatusByRecord(r *record) string {
 }
 
 func displayCount(r *record, b *bytes.Buffer) {
-	results, err := r.getResult()
+	results, err := r.GetResult()
 	if err != nil {
 		b.WriteString(fmt.Sprintf("%-20s %s\n", "count compare: ", err.Error()))
 		return
 	}
 	for _, result := range results {
 		if result.Step == "countCompareJob" {
-			if result.Identical == "yes" {
+			if result.Identical {
 				b.WriteString(fmt.Sprintf("%-20s %s\n", "count compare: ", "equal"))
 				return
 			}
@@ -106,21 +106,21 @@ func displayCount(r *record, b *bytes.Buffer) {
 }
 
 func displayAccount(r *record, b *bytes.Buffer) {
-	results, err := r.getResult()
+	results, err := r.GetResult()
 	if err != nil {
 		b.WriteString(fmt.Sprintf("%-20s %s\n", "account compare: ", err.Error()))
 		return
 	}
 	for _, result := range results {
 		if result.Step == "accountDataJob" {
-			if result.Identical == "yes" {
+			if result.Identical {
 				b.WriteString(fmt.Sprintf("%-20s %s\n", "account compare: ", "equal"))
 				return
 			}
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "account compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "account diff"))
 
-			items, err := r.getAccountMetaDiff()
+			items, err := r.GetAccountMetaDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -135,21 +135,21 @@ func displayAccount(r *record, b *bytes.Buffer) {
 }
 
 func displayShard(r *record, b *bytes.Buffer) {
-	results, err := r.getResult()
+	results, err := r.GetResult()
 	if err != nil {
 		b.WriteString(fmt.Sprintf("%-20s %s\n", "shard key compare: ", err.Error()))
 		return
 	}
 	for _, result := range results {
 		if result.Step == "shardKeyDataJob" {
-			if result.Identical == "yes" {
+			if result.Identical {
 				b.WriteString(fmt.Sprintf("%-20s %s\n", "shard key compare: ", "equal"))
 				return
 			}
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "shard key compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "shard key diff"))
 
-			items, err := r.getShardMetaDiff()
+			items, err := r.GetShardMetaDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -163,21 +163,21 @@ func displayShard(r *record, b *bytes.Buffer) {
 }
 
 func displayJs(r *record, b *bytes.Buffer) {
-	results, err := r.getResult()
+	results, err := r.GetResult()
 	if err != nil {
 		b.WriteString(fmt.Sprintf("%-20s %s\n", "javascript compare: ", err.Error()))
 		return
 	}
 	for _, result := range results {
 		if result.Step == "javascriptDataJob" {
-			if result.Identical == "yes" {
+			if result.Identical {
 				b.WriteString(fmt.Sprintf("%-20s %s\n", "javascript compare: ", "equal"))
 				return
 			}
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "javascript compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "javascript diff"))
 
-			items, err := r.getJsMetaDiff()
+			items, err := r.GetJsMetaDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -192,21 +192,21 @@ func displayJs(r *record, b *bytes.Buffer) {
 }
 
 func displayTag(r *record, b *bytes.Buffer) {
-	results, err := r.getResult()
+	results, err := r.GetResult()
 	if err != nil {
 		b.WriteString(fmt.Sprintf("%-20s %s\n", "tags compare: ", err.Error()))
 		return
 	}
 	for _, result := range results {
 		if result.Step == "tagDataJob" {
-			if result.Identical == "yes" {
+			if result.Identical {
 				b.WriteString(fmt.Sprintf("%-20s %s\n", "tags compare: ", "equal"))
 				return
 			}
 			b.WriteString(fmt.Sprintf("%-20s %s\n", "tags compare: ", "not equal"))
 			b.WriteString(fmt.Sprintf("\t%s:\n", "tags diff"))
 
-			items, err := r.getTagsDiff()
+			items, err := r.GetTagsDiff()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("\t%s\n", err.Error()))
 				return
@@ -220,7 +220,7 @@ func displayTag(r *record, b *bytes.Buffer) {
 	}
 }
 
-func displayData(r *record, b *bytes.Buffer, status *taskStatus) {
+func displayData(r *record, b *bytes.Buffer, status *TaskStatus) {
 	if status.Step == "staticDataJob" {
 		b.WriteString(fmt.Sprintf("%-20s %d\n", "progress(%):", status.Progress))
 		b.WriteString(fmt.Sprintf("%-20s %s\n", "finished/total(namespace):", status.FinishNsCnt))
@@ -228,7 +228,7 @@ func displayData(r *record, b *bytes.Buffer, status *taskStatus) {
 
 	for {
 		if status.Step == "dynamicDataJob" {
-			ts, err := r.getRecentTs()
+			ts, err := r.GetRecentTs()
 			if err != nil {
 				b.WriteString(fmt.Sprintf("%-20s %s\n", "sync ts:", err.Error()))
 				break
@@ -245,7 +245,7 @@ func displayData(r *record, b *bytes.Buffer, status *taskStatus) {
 		var cnt int64
 		var err error
 		b.WriteString(fmt.Sprintf("%-20s %v\n", "diff count:", func() interface{} {
-			if cnt, err = r.getDiffCount(); err != nil {
+			if cnt, err = r.GetDiffCount(); err != nil {
 				return utils.Red("ERROR")
 			} else {
 				return cnt
@@ -253,13 +253,13 @@ func displayData(r *record, b *bytes.Buffer, status *taskStatus) {
 		}()))
 		if cnt != 0 {
 			b.WriteString("diff data sample (10): \n")
-			diff, err := r.getSampleDiffData()
+			diff, err := r.GetSampleDiffData()
 			if err != nil {
 				b.WriteString("\t" + err.Error() + "\n")
 			}
 			for _, d := range diff {
 				b.WriteString(utils.Blue(fmt.Sprintf("\t%-20s %s\n\t\tsrc: %v\n\t\tdst: %v\n\n",
-					"ns: "+d[0], "id: "+d[1], d[2], d[3])))
+					"ns: "+d.Ns, fmt.Sprintf("id: %v", d.SrcId), d.SrcVal, d.DstVal)))
 			}
 		}
 	}

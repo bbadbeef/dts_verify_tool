@@ -1,8 +1,8 @@
 package httpserver
 
 import (
+	"github.com/bbadbeef/dts_verify_tool/httpserver/controller"
 	"github.com/gin-gonic/gin"
-	"mongo_compare/httpserver/controller"
 )
 
 func addRouter(engine *gin.Engine) {

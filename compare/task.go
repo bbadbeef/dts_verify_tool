@@ -1,10 +1,57 @@
 package compare
 
 import (
+	"context"
 	"fmt"
+	"github.com/bbadbeef/dts_verify_tool/utils"
 	"github.com/sirupsen/logrus"
-	"mongo_compare/utils"
+	"time"
 )
+
+const (
+	Account = 1 << iota
+	Index
+	ShardKey
+	Tag
+	Js
+	Namespace
+	Count
+	Data
+	Partial
+)
+
+func genJobs(c uint) []Job {
+	jobs := []Job{&nsJob{}}
+	if c&Account != 0 {
+		jobs = append(jobs, &nsFilterAccountJob{}, &countCompareJob{}, &accountDataJob{})
+	}
+	if c&ShardKey != 0 {
+		jobs = append(jobs, &nsFilterShardKeyJob{}, &countCompareJob{}, &shardKeyDataJob{})
+	}
+	if c&Tag != 0 {
+		jobs = append(jobs, &nsFilterTagJob{}, &countCompareJob{}, &tagDataJob{})
+	}
+	if c&Js != 0 {
+		jobs = append(jobs, &nsFilterJavascriptJob{}, &countCompareJob{}, &javascriptDataJob{})
+	}
+	getFilter := func() Job {
+		if c&Partial != 0 {
+			return &nsFilterSpecifiedJob{}
+		}
+		return &nsFilterBaseJob{}
+	}
+	if c&Index != 0 {
+		jobs = append(jobs, getFilter(), &indexJob{})
+	}
+	if c&Count != 0 {
+		jobs = append(jobs, getFilter(), &countCompareJob{})
+	}
+	if c&Data != 0 {
+		jobs = append(jobs, getFilter(), &countCompareJob{}, &staticDataJob{}, &dynamicDataJob{})
+	}
+
+	return jobs
+}
 
 var (
 	TaskStep = map[string][]Job{
@@ -23,6 +70,8 @@ var (
 			&nsFilterShardKeyJob{}, &countCompareJob{}, &shardKeyDataJob{},
 			&nsFilterTagJob{}, &countCompareJob{}, &tagDataJob{},
 			&nsFilterBaseJob{}, &countCompareJob{}, &staticDataJob{}, &dynamicDataJob{}},
+
+		"customize": {},
 	}
 )
 
@@ -36,19 +85,21 @@ type Task struct {
 
 	steps   []Job
 	current int
+	status  string
+
+	onFinishFunc []func()
 }
 
 // NewTask ...
 func NewTask(para *Parameter) *Task {
-	id := utils.GenTaskId()
 	w, err := utils.GetRotateWriter()
 	if err != nil {
 		return nil
 	}
-	l := utils.NewLogger(w, id)
-	l.Infof("create task: %s", id)
+	l := utils.NewLogger(w, para.Id)
+	l.Infof("create task: %s", para.Id)
 
-	return &Task{id: id, l: l, p: para}
+	return &Task{id: para.Id, l: l, p: para}
 }
 
 // Id ...
@@ -94,7 +145,12 @@ func (t *Task) Init() error {
 	if len(t.steps) != 0 {
 		return nil
 	}
-	for _, s := range TaskStep[t.p.CompareType] {
+
+	steps := TaskStep[t.p.CompareType]
+	if len(t.steps) == 0 {
+		steps = genJobs(t.p.CompareExtra)
+	}
+	for _, s := range steps {
 		s.setBase(base)
 		t.steps = append(t.steps, s)
 	}
@@ -103,30 +159,49 @@ func (t *Task) Init() error {
 }
 
 // Run ...
-func (t *Task) Run() error {
+func (t *Task) Run() (err error) {
+	t.status = StatusRunning
+
+	defer func() {
+		fields := map[string]interface{}{
+			"status":   StatusSuccess,
+			"end_time": time.Now().Format("2006-01-02 15:04:05"),
+		}
+		if err != nil {
+			fields["status"] = StatusFailed
+			fields["error"] = err.Error()
+		}
+		if t.status == StatusTerminated {
+			fields["status"] = StatusTerminated
+		}
+		if e := t.b.r.updateStatus(t.id, fields); e != nil {
+			t.l.Errorf("save result error: %s", err.Error())
+		}
+		for _, f := range t.onFinishFunc {
+			f()
+		}
+		t.clean()
+	}()
 	for _, s := range t.steps {
+		if t.status != StatusRunning {
+			return nil
+		}
 		t.current++
 		s.polymorphism()
-		if err := s.init(); err != nil {
+		if err = s.init(); err != nil {
 			t.l.Errorf("error occurred while init step %s, error: %s", s.name(), err.Error())
-			if err := t.b.r.setTaskError(t.id, err); err != nil {
-				t.l.Errorf("save result error: %s", err.Error())
-			}
 			return err
 		}
 
-		b, err := s.do()
+		_, err = s.do()
 		if err != nil {
 			t.l.Errorf("error occurred in step %s, error: %s", s.name(), err.Error())
-			if err := t.b.r.setTaskError(t.id, err); err != nil {
-				t.l.Errorf("save result error: %s", err.Error())
-			}
 			return err
 		}
-		if !b {
-			t.l.Errorf("task terminated, step %s", s.name())
-			return fmt.Errorf("step %s compare not equal", s.name())
-		}
+		//if !b {
+		//	t.l.Errorf("task terminated, step %s", s.name())
+		//	return fmt.Errorf("step %s compare not equal", s.name())
+		//}
 	}
 	return nil
 }
@@ -154,4 +229,50 @@ func (t *Task) DisplayConfig() string {
 		return "failed"
 	}
 	return t.p.display()
+}
+
+// Terminate ...
+func (t *Task) Terminate() error {
+	t.status = StatusTerminated
+	t.b.cancel()
+	return nil
+}
+
+// SetCBFunc ...
+func (t *Task) SetCBFunc(f func(event *Event)) {
+	t.p.CBFunc = f
+}
+
+func (t *Task) SetFiniteFunc(f func() bool) {
+	t.p.FiniteFunc = f
+}
+
+// GetStatus ...
+func (t *Task) GetStatus() (*TaskStatus, error) {
+	return t.b.r.GetStatus()
+}
+
+// GetOplogDelay ...
+func (t *Task) GetOplogDelay() (int, error) {
+	return t.b.r.getOplogDelay()
+}
+
+func (t *Task) AddActionOnFinish(f func()) {
+	t.onFinishFunc = append(t.onFinishFunc, f)
+}
+
+func (t *Task) GetLog() *logrus.Logger {
+	return t.l
+}
+
+func (t *Task) GetSampleDiffData() ([]*MetaDiffItem, error) {
+	return t.b.r.GetSampleDiffData()
+}
+
+func (t *Task) clean() {
+	t.b.srcClient.Disconnect(context.Background())
+	t.b.dstClient.Disconnect(context.Background())
+	for _, c := range t.b.srcMongodClient {
+		c.Disconnect(context.Background())
+	}
 }

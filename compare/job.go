@@ -1,9 +1,11 @@
 package compare
 
 import (
+	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/mongo"
+	"time"
 )
 
 // Job ...
@@ -28,6 +30,9 @@ type BaseJob struct {
 	dstClient       *mongo.Client
 	srcMongodClient []*mongo.Client
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	imData map[string]interface{}
 }
 
@@ -51,6 +56,40 @@ func (bj *BaseJob) setError(err error) {
 
 func (bj *BaseJob) error() error {
 	return bj.e
+}
+
+func (bj *BaseJob) notifyDiff(t int, a int, items []*MetaDiffItem) {
+	if bj.parameter.CBFunc == nil {
+		return
+	}
+	if t == Data {
+		return
+	}
+	res := make([]*DiffRecord, 0)
+	for _, item := range items {
+		res = append(res, &DiffRecord{
+			Typ:    NotifyTypeName[t],
+			Action: a,
+			Ns:     item.Ns,
+			SrcId:  marshalId(item.SrcId),
+			DstId:  marshalId(item.DstId),
+			SrcVal: marshalVal(item.SrcVal),
+			DstVal: marshalVal(item.DstVal),
+		})
+	}
+	if len(res) != 0 {
+		bj.parameter.CBFunc(&Event{
+			EventType: EventDiffRecord,
+			Data:      res,
+		})
+	}
+}
+
+func (bj *BaseJob) updateStepSimple(step string) error {
+	return bj.r.updateStatus(bj.task.id, map[string]interface{}{
+		"sub_task": bj.tName,
+		"step":     step,
+	})
 }
 
 func (bj *BaseJob) updateStep(step string) error {
@@ -106,11 +145,12 @@ func (ij *initJob) do() (bool, error) {
 		srcClient: ij.srcClient,
 		dstClient: ij.dstClient,
 		outDb:     ij.parameter.ResultDb,
+		taskId:    ij.task.id,
 	}
 
 	switch ij.parameter.RunMode {
 	case "resume":
-		status, err := ij.r.getStatus()
+		status, err := ij.r.GetStatus()
 		if err != nil {
 			return false, err
 		}
@@ -127,29 +167,34 @@ func (ij *initJob) do() (bool, error) {
 			return false, err
 		}
 
-		if err := ij.r.saveStatus(&taskStatus{
-			Name:    ij.task.name,
-			SubTask: ij.tName,
-			OId:     ij.task.id,
-			Status:  StatusRunning,
-			Step:    "init",
+		if err := ij.r.saveStatus(&TaskStatus{
+			Name:      ij.task.name,
+			Extra:     ij.parameter.CompareExtra,
+			SubTask:   ij.tName,
+			OId:       ij.task.id,
+			Status:    StatusRunning,
+			Step:      "init",
+			StartTime: time.Now().Format("2006-01-02 15:04:05"),
 		}); err != nil {
 			return false, err
 		}
 	}
 
+	ij.ctx, ij.cancel = context.WithCancel(context.Background())
+
 	ij.log.Info("init ok")
 	return true, nil
 }
 
-func (ij *initJob) setResumeInfo(status *taskStatus) error {
+func (ij *initJob) setResumeInfo(status *TaskStatus) error {
 	ij.tName = status.Name
 	ij.task.name = status.Name
 	ij.task.id = status.OId
 	ij.parameter.CompareType = status.Name
+	ij.parameter.CompareExtra = status.Extra
 	switch status.Step {
 	case "staticDataJob":
-		if err := ij.r.dropTable(diffMetaCollection, resultCollection); err != nil {
+		if err := ij.r.cleanForResume(); err != nil {
 			return err
 		}
 		ij.setData("ts", status.Ts)

@@ -1,8 +1,8 @@
 package taskmanager
 
 import (
-	"mongo_compare/compare"
-	"mongo_compare/utils"
+	"github.com/bbadbeef/dts_verify_tool/compare"
+	"github.com/bbadbeef/dts_verify_tool/utils"
 	"os"
 	"sync"
 )

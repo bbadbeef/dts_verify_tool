@@ -3,13 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/bbadbeef/dts_verify_tool/compare"
+	"github.com/bbadbeef/dts_verify_tool/httpserver"
+	"github.com/bbadbeef/dts_verify_tool/taskmanager"
+	"github.com/bbadbeef/dts_verify_tool/tools"
+	"github.com/bbadbeef/dts_verify_tool/utils"
 	"github.com/sirupsen/logrus"
 	"log"
-	"mongo_compare/compare"
-	"mongo_compare/httpserver"
-	"mongo_compare/taskmanager"
-	"mongo_compare/tools"
-	"mongo_compare/utils"
 	"os"
 	"os/signal"
 	"strings"
@@ -196,6 +196,7 @@ func main() {
 	utils.SetGlobalLogger(l)
 
 	utils.InitConfig()
+	utils.SetDefaultConfig()
 
 	switch runMode {
 	case "show_config":
@@ -244,6 +245,7 @@ func main() {
 
 func pacPara() *compare.Parameter {
 	return &compare.Parameter{
+		Id:     utils.GenTaskId(),
 		SrcUrl: srcUrl,
 		SrcMongodUrl: func() []string {
 			res := make([]string, 0)
@@ -282,5 +284,8 @@ func pacPara() *compare.Parameter {
 		DstConcurrency: dstConcurrency,
 		RunMode:        runMode,
 		Sample:         sample,
+		FiniteFunc: func() bool {
+			return false
+		},
 	}
 }

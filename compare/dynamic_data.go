@@ -8,7 +8,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"reflect"
 	"sync"
 	"time"
 )
@@ -16,18 +15,26 @@ import (
 type dataItem struct {
 	val bson.M
 	oid interface{}
+	ns  string
+	id  interface{}
+}
+
+type diffOid struct {
+	oid interface{}
+	act int
 }
 
 type dynamicDataJob struct {
 	assistJob
-	srcCh chan *diffItem
-	dstCh chan *diffItem
+	srcCh chan *DiffItem
+	dstCh chan *DiffItem
 
-	diffCh     chan *diffItem
+	diffCh     chan *DiffItem // oplog读取的原始数据
 	diffBuff   []interface{}
 	readers    []*oplogReader
 	tsRecorder *timestampRecorder
 
+	endFlag   bool
 	srcLocker sync.Mutex
 	srcData   map[string]*dataItem
 	dstLocker sync.Mutex
@@ -35,7 +42,8 @@ type dynamicDataJob struct {
 }
 
 func (dd *dynamicDataJob) name() string {
-	return reflect.TypeOf(dynamicDataJob{}).Name()
+	//return reflect.TypeOf(dynamicDataJob{}).Name()
+	return "增量"
 }
 
 func (dd *dynamicDataJob) init() error {
@@ -44,7 +52,7 @@ func (dd *dynamicDataJob) init() error {
 		dd.log.Error("get ts data error")
 		return fmt.Errorf("get ts data error")
 	}
-	dd.diffCh = make(chan *diffItem, buffLengthRatio)
+	dd.diffCh = make(chan *DiffItem, buffLengthRatio)
 	dd.diffBuff = make([]interface{}, 0, buffLengthRatio)
 
 	dd.tsRecorder = newTimestampRecorder(dd.r, dd.task.id)
@@ -53,7 +61,7 @@ func (dd *dynamicDataJob) init() error {
 		dd.tsRecorder.updateTs(shard, ts)
 	}
 
-	if err := dd.updateStep(dd.name()); err != nil {
+	if err := dd.updateStepSimple(dd.name()); err != nil {
 		dd.log.Errorf("update step error: %s", err.Error())
 		return err
 	}
@@ -61,11 +69,11 @@ func (dd *dynamicDataJob) init() error {
 }
 
 func (dd *dynamicDataJob) do() (bool, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(dd.ctx)
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		// 循环遍历diff表，删掉两端数据一致的
@@ -74,7 +82,7 @@ func (dd *dynamicDataJob) do() (bool, error) {
 
 	go func() {
 		defer wg.Done()
-		// 记录oplog里修改的数据到diff表
+		// 记录不一致的数据到diff表
 		dd.recordDiff(ctx)
 	}()
 
@@ -82,13 +90,16 @@ func (dd *dynamicDataJob) do() (bool, error) {
 		defer wg.Done()
 		// 循环读oplog
 		dd.readMongodOplog(ctx, cancel)
+		dd.endFlag = true
+		close(dd.diffCh)
 	}()
 
 	go func() {
-		defer wg.Done()
 		dd.saveTsLoop(ctx)
 	}()
+
 	wg.Wait()
+	dd.log.Info("dynamic data compare finish")
 	if dd.error() != nil {
 		return false, dd.error()
 	}
@@ -130,20 +141,24 @@ func (dd *dynamicDataJob) startDiffLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Second * 10):
+		case <-time.After(time.Second * 5):
 			dd.log.Info("start diff round")
+			willFinish := dd.endFlag
 			if err := dd.fetchDiffData(ctx); err != nil {
 				dd.log.Errorf("fetch diff data error: %s", err.Error())
 				break
 			}
 			dd.removeSame(ctx)
 			dd.log.Info("diff round finish")
+			if willFinish {
+				return
+			}
 		}
 	}
 }
 
 func (dd *dynamicDataJob) removeSame(ctx context.Context) {
-	ch := make(chan interface{}, dd.parameter.DstConcurrency*buffLengthRatio)
+	ch := make(chan *diffOid, dd.parameter.DstConcurrency*buffLengthRatio)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -151,21 +166,49 @@ func (dd *dynamicDataJob) removeSame(ctx context.Context) {
 		dd.doRemove(ctx, ch)
 	}()
 	for id, data := range dd.srcData {
+		act := Update
 		if _, ok := dd.dstData[id]; !ok {
-			dd.log.Warnf("not found in source: %v", id)
-			continue
-		}
-		if !compareDoc(data.val, dd.dstData[id].val) {
+			dd.log.Warnf("not found in destination: %v", id)
+		} else if !compareDoc(data.val, dd.dstData[id].val) {
 			dd.log.Warnf("not equal between source and destination: %v", id)
-			continue
+		} else {
+			act = Undo
 		}
-		ch <- data.oid
+		ch <- &diffOid{
+			oid: data.oid,
+			act: act,
+		}
+		dd.notifyDiff(Data, act, []*MetaDiffItem{
+			{
+				Ns:    data.ns,
+				SrcId: data.id,
+				DstId: func() interface{} {
+					if _, ok := dd.dstData[id]; !ok {
+						return nil
+					}
+					if len(dd.dstData[id].val) == 0 {
+						return nil
+					}
+					return data.id
+				}(),
+				SrcVal: data.val,
+				DstVal: func() interface{} {
+					if _, ok := dd.dstData[id]; !ok {
+						return nil
+					}
+					if len(dd.dstData[id].val) == 0 {
+						return nil
+					}
+					return dd.dstData[id].val
+				}(),
+			},
+		})
 	}
 	close(ch)
 	wg.Wait()
 }
 
-func (dd *dynamicDataJob) doRemove(ctx context.Context, ch chan interface{}) {
+func (dd *dynamicDataJob) doRemove(ctx context.Context, ch chan *diffOid) {
 	var wg sync.WaitGroup
 	wg.Add(dd.parameter.DstConcurrency)
 	for i := 0; i < dd.parameter.DstConcurrency; i++ {
@@ -179,9 +222,15 @@ func (dd *dynamicDataJob) doRemove(ctx context.Context, ch chan interface{}) {
 					if !ok {
 						return
 					}
-					dd.log.Info("remove from diff: ", id)
-					if err := dd.r.removeDiff(id); err != nil {
-						dd.log.Errorf("remove from diff error: %s", err.Error())
+					if id.act == Undo {
+						dd.log.Info("remove from diff: ", id.oid)
+						if err := dd.r.removeDiff(id.oid); err != nil {
+							dd.log.Errorf("remove from diff error: %s", err.Error())
+						}
+					} else {
+						if err := dd.r.confirmDiff(id.oid); err != nil {
+							dd.log.Errorf("confirm diff error: %s", err.Error())
+						}
 					}
 				}
 			}
@@ -191,8 +240,8 @@ func (dd *dynamicDataJob) doRemove(ctx context.Context, ch chan interface{}) {
 }
 
 func (dd *dynamicDataJob) fetchDiffData(ctx context.Context) error {
-	dd.srcCh = make(chan *diffItem, dd.parameter.SrcConcurrency*buffLengthRatio)
-	dd.dstCh = make(chan *diffItem, dd.parameter.DstConcurrency*buffLengthRatio)
+	dd.srcCh = make(chan *DiffItem, dd.parameter.SrcConcurrency*buffLengthRatio)
+	dd.dstCh = make(chan *DiffItem, dd.parameter.DstConcurrency*buffLengthRatio)
 	dd.srcData = make(map[string]*dataItem)
 	dd.dstData = make(map[string]*dataItem)
 
@@ -202,13 +251,14 @@ func (dd *dynamicDataJob) fetchDiffData(ctx context.Context) error {
 		defer wg.Done()
 		dd.find(ctx)
 	}()
-	cursor, err := dd.dstClient.Database(dd.parameter.ResultDb).Collection("diff").
+	cursor, err := dd.dstClient.Database(dd.parameter.ResultDb).Collection(dd.r.diffCollection()).
 		Find(ctx, bson.D{}, &options.FindOptions{})
 	if err != nil {
 		return err
 	}
+	defer cursor.Close(context.Background())
 	for cursor.Next(ctx) {
-		var di diffItem
+		var di DiffItem
 		if err := cursor.Decode(&di); err != nil {
 			return err
 		}
@@ -229,7 +279,7 @@ func (dd *dynamicDataJob) newSrcFindWorker(ctx context.Context, wg *sync.WaitGro
 		defer func() {
 			srcRoutineManager.remove(unit)
 			wg.Done()
-			dd.log.Info("a src find routine gone")
+			// dd.log.Info("a src find routine gone")
 		}()
 		for {
 			select {
@@ -239,18 +289,9 @@ func (dd *dynamicDataJob) newSrcFindWorker(ctx context.Context, wg *sync.WaitGro
 				if !ok {
 					return
 				}
-				var srcData bson.M
-				var err error
-				for i := 0; i < retryTimes; i++ {
-					srcData, err = findById(ctx, dd.srcClient, item.Ns, item.Id)
-					if err != nil {
-						dd.log.Errorf("query on source error: %s", err.Error())
-						time.Sleep(retryDuration)
-						continue
-					}
-					break
-				}
+				srcData, err := findByIdWithRetry(ctx, dd.srcClient, item.Ns, item.Id)
 				if err != nil {
+					dd.log.Errorf("query on source error: %s", err.Error())
 					return
 				}
 				dd.saveSrc(item, srcData)
@@ -267,7 +308,7 @@ func (dd *dynamicDataJob) newDstFindWorker(ctx context.Context, wg *sync.WaitGro
 		defer func() {
 			dstRoutineManager.remove(unit)
 			wg.Done()
-			dd.log.Info("a dst find routine gone")
+			// dd.log.Info("a dst find routine gone")
 		}()
 		for {
 			select {
@@ -277,18 +318,9 @@ func (dd *dynamicDataJob) newDstFindWorker(ctx context.Context, wg *sync.WaitGro
 				if !ok {
 					return
 				}
-				var dstData bson.M
-				var err error
-				for i := 0; i < retryTimes; i++ {
-					dstData, err = findById(ctx, dd.dstClient, item.Ns, item.Id)
-					if err != nil {
-						dd.log.Errorf("query on destination error: %s", err.Error())
-						time.Sleep(retryDuration)
-						continue
-					}
-					break
-				}
+				dstData, err := findByIdWithRetry(ctx, dd.dstClient, item.Ns, item.Id)
 				if err != nil {
+					dd.log.Errorf("query on destination error: %s", err.Error())
 					return
 				}
 				dd.saveDst(item, dstData)
@@ -342,40 +374,65 @@ func (dd *dynamicDataJob) find(ctx context.Context) {
 	wg.Wait()
 }
 
-func (dd *dynamicDataJob) saveSrc(item *diffItem, val bson.M) {
+func (dd *dynamicDataJob) saveSrc(item *DiffItem, val bson.M) {
 	dd.srcLocker.Lock()
 	dd.srcData[fmt.Sprintf("%v", item.OId)] = &dataItem{
 		val: val,
 		oid: item.OId,
+		ns:  item.Ns,
+		id:  item.Id,
 	}
 	dd.srcLocker.Unlock()
 }
 
-func (dd *dynamicDataJob) saveDst(item *diffItem, val bson.M) {
+func (dd *dynamicDataJob) saveDst(item *DiffItem, val bson.M) {
 	dd.dstLocker.Lock()
 	dd.dstData[fmt.Sprintf("%v", item.OId)] = &dataItem{
 		val: val,
 		oid: item.OId,
+		ns:  item.Ns,
+		id:  item.Id,
 	}
 	dd.dstLocker.Unlock()
 }
 
+//func (dd *dynamicDataJob) filterDiff(ctx context.Context) {
+//	for {
+//		select {
+//		case <-ctx.Done():
+//			return
+//		case item, ok := <-dd.diffCh:
+//			if !ok {
+//				return
+//			}
+//			srcDataItem, err := dd.findByIdWithRetry(ctx, dd.srcClient, item.Ns, item.Id)
+//			if err != nil {
+//				return
+//			}
+//			dstDataItem, err := dd.findByIdWithRetry(ctx, dd.dstClient, item.Ns, item.Id)
+//			if err != nil {
+//				return
+//			}
+//			if compareDoc(srcDataItem, dstDataItem) {
+//				continue
+//			}
+//			dd.diffCleanCh <- item
+//		}
+//	}
+//}
+
 func (dd *dynamicDataJob) recordDiff(ctx context.Context) {
 	start := time.Now()
-	var ts int64
-	doRecord := func(t int64) {
+	doRecord := func() {
 		if len(dd.diffBuff) != 0 {
 			if err := dd.r.saveDiff(dd.diffBuff); err != nil {
 				dd.log.Errorf("save diff error: %s", err.Error())
 				return
 			}
-		}
-		for _, item := range dd.diffBuff {
-			it, _ := item.(*diffItem)
-			if it == nil {
-				continue
+			for _, item := range dd.diffBuff {
+				it := item.(*DiffItem)
+				dd.tsRecorder.updateTs(it.shard, it.Ts)
 			}
-			dd.tsRecorder.updateTs(it.shard, it.Ts)
 		}
 		dd.diffBuff = dd.diffBuff[:0:0]
 	}
@@ -384,30 +441,32 @@ func (dd *dynamicDataJob) recordDiff(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Second * 10):
-			doRecord(ts)
-		case item := <-dd.diffCh:
-			dd.diffBuff = append(dd.diffBuff, item)
-			if ts < item.Ts {
-				ts = item.Ts
+		case <-time.After(time.Second * 5):
+			doRecord()
+		case item, ok := <-dd.diffCh:
+			if !ok {
+				return
 			}
-			if len(dd.diffBuff) >= buffLengthRatio || time.Now().Sub(start) > time.Second*10 {
+			dd.diffBuff = append(dd.diffBuff, item)
+			if len(dd.diffBuff) >= buffLengthRatio || time.Now().Sub(start) > time.Second*5 {
 				if len(dd.diffBuff) < buffLengthRatio {
 					start = time.Now()
 				}
-				doRecord(ts)
+				doRecord()
 			}
 		}
 	}
 }
 
 type oplogReader struct {
-	shard  int
-	c      *mongo.Client
-	ts     int64
-	diffCh chan *diffItem
-	log    *logrus.Logger
-	job    *dynamicDataJob
+	shard       int
+	c           *mongo.Client
+	ts          int64
+	nextRoundTs int64
+	round       int
+	diffCh      chan *DiffItem
+	log         *logrus.Logger
+	job         *dynamicDataJob
 }
 
 func newOplogReader(shard int, c *mongo.Client, ts int64, job *dynamicDataJob) *oplogReader {
@@ -415,6 +474,7 @@ func newOplogReader(shard int, c *mongo.Client, ts int64, job *dynamicDataJob) *
 		shard:  shard,
 		c:      c,
 		ts:     ts,
+		round:  0,
 		diffCh: job.diffCh,
 		log:    job.log,
 		job:    job,
@@ -427,30 +487,41 @@ func (or *oplogReader) read(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-time.After(time.Second * 10):
-			if err := or.readOplog(ctx); err != nil {
+			if b, err := or.readOplog(ctx); err != nil {
 				or.log.Errorf("read oplog error: %s", err.Error())
 				return err
+			} else if b {
+				return nil
 			}
 		}
 	}
 }
 
-func (or *oplogReader) readOplog(ctx context.Context) error {
-	or.log.Infof("new round read oplog, shard: %d, ts: %d", or.shard, or.ts)
+func (or *oplogReader) readOplog(ctx context.Context) (bool, error) {
+	or.log.Infof("new round read oplog, round: %d, shard: %d, ts: %d", or.round, or.shard, or.ts)
+	or.nextRoundTs = time.Now().Unix()
+	or.job.tsRecorder.updateTs(or.shard, or.nextRoundTs)
+	if err := or.job.tsRecorder.saveTs(); err != nil {
+		or.log.Error("save ts error: ", err.Error())
+	}
+
 	cursor, err := or.c.Database("local").Collection("oplog.rs").Find(ctx,
 		bson.D{{"op", bson.M{"$in": []string{"i", "u", "d"}}},
 			{"ts", bson.M{"$gte": primitive.Timestamp{T: uint32(or.ts), I: 0}}}},
-		&options.FindOptions{Sort: bson.M{"ts": 1}})
+		&options.FindOptions{})
 	if err != nil {
 		or.log.Errorf("read oplog error: %s", err.Error())
-		return err
+		return false, err
 	}
+	defer cursor.Close(context.Background())
 	for cursor.Next(ctx) {
 		var od oplogDoc
 		if err := cursor.Decode(&od); err != nil {
 			or.log.Errorf("decode oplog error: %s", err.Error())
-			return err
+			return false, err
 		}
+		// or.job.tsRecorder.updateTs(or.shard, od.Ts.Unix())
+		or.ts = od.Ts.Unix()
 		if !filterOplog(&od, or.job.parameter.SpecifiedDb, or.job.parameter.SpecifiedNs) {
 			continue
 		}
@@ -463,13 +534,28 @@ func (or *oplogReader) readOplog(ctx context.Context) error {
 		di.shard = or.shard
 		or.send(di)
 	}
-	or.log.Infof("read to oplog end, will start a new round, shard: %d", or.shard)
-	or.ts = time.Now().Unix() - 1
-	or.job.tsRecorder.updateTs(or.shard, or.ts)
-	return nil
+	or.log.Infof("read to oplog end, round: %d, shard: %d, ts: %d", or.round, or.shard, or.ts)
+	or.round++
+	if or.finish() {
+		or.log.Info("task will finish")
+		return true, nil
+	}
+	or.log.Infof("will start a new round: round: %d, shard: %d, ts: %d", or.round, or.shard, or.ts)
+	return false, nil
 }
 
-func (or *oplogReader) send(di *diffItem) {
+func (or *oplogReader) finish() bool {
+	return or.job.parameter.FiniteFunc()
+	//if or.round >= 6 {
+	//	return true
+	//}
+	//if time.Now().Unix()-or.ts < 30 {
+	//	return true
+	//}
+	//return false
+}
+
+func (or *oplogReader) send(di *DiffItem) {
 	or.diffCh <- di
 }
 

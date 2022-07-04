@@ -15,7 +15,8 @@ type nsJob struct {
 }
 
 func (nj *nsJob) name() string {
-	return reflect.TypeOf(*nj).Name()
+	//return reflect.TypeOf(*nj).Name()
+	return "获取库表"
 }
 
 func (nj *nsJob) init() error {
@@ -61,6 +62,9 @@ func (nj *nsJob) listDb() (bool, error) {
 			return
 		}
 		for _, db := range dbs {
+			if db == "TencetDTSData" || db == nj.task.p.ResultDb {
+				continue
+			}
 			res[db] = nil
 		}
 	}
@@ -87,12 +91,12 @@ func (nj *nsJob) listCollection() (bool, error) {
 
 	var wg sync.WaitGroup
 	wg.Add(nj.parameter.SrcConcurrency + nj.parameter.DstConcurrency)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(nj.ctx)
 	defer cancel()
 	var e error
 	srcCh := make(chan string, nj.parameter.SrcConcurrency)
 	dstCh := make(chan string, nj.parameter.DstConcurrency)
-	collGetter := func(c *mongo.Client, ch chan string, ns map[string][]string) {
+	collGetter := func(c *mongo.Client, ch chan string, ns map[string][]string, m *sync.Mutex) {
 		defer wg.Done()
 		for {
 			select {
@@ -108,15 +112,19 @@ func (nj *nsJob) listCollection() (bool, error) {
 					e = err
 					return
 				}
+				m.Lock()
 				ns[db] = cs
+				m.Unlock()
 			}
 		}
 	}
+	var srcMutex sync.Mutex
+	var dstMutex sync.Mutex
 	for i := 0; i < nj.parameter.SrcConcurrency; i++ {
-		go collGetter(nj.srcClient, srcCh, nj.srcNs)
+		go collGetter(nj.srcClient, srcCh, nj.srcNs, &srcMutex)
 	}
 	for i := 0; i < nj.parameter.DstConcurrency; i++ {
-		go collGetter(nj.dstClient, dstCh, nj.dstNs)
+		go collGetter(nj.dstClient, dstCh, nj.dstNs, &dstMutex)
 	}
 	var sendWg sync.WaitGroup
 	sendWg.Add(2)
@@ -159,12 +167,13 @@ type nsFilterBaseJob struct {
 	dstNs        map[string][]string
 	srcNsCleaned map[string][]string
 	dstNsCleaned map[string][]string
-	f            func(before, after map[string][]string)
+	f            func(mc *mongo.Client, before, after map[string][]string)
 	step         string
 }
 
 func (nfj *nsFilterBaseJob) name() string {
-	return nfj.step
+	//return nfj.step
+	return "库表信息"
 }
 
 func (nfj *nsFilterBaseJob) init() error {
@@ -182,7 +191,7 @@ func (nfj *nsFilterBaseJob) init() error {
 		return fmt.Errorf("get destination namespace data error")
 	}
 
-	if err := nfj.updateStep(nfj.step); err != nil {
+	if err := nfj.updateStep(nfj.name()); err != nil {
 		return err
 	}
 	return nil
@@ -191,13 +200,17 @@ func (nfj *nsFilterBaseJob) init() error {
 func (nfj *nsFilterBaseJob) polymorphism() {
 	nfj.tName = "data"
 	nfj.step = reflect.TypeOf(*nfj).Name()
-	nfj.f = func(before, after map[string][]string) {
+	nfj.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
 			if inList(db, systemDb) {
 				continue
 			}
 			for _, c := range coll {
 				if inListRegex(c, systemCollection) {
+					continue
+				}
+				if isView(mc, db, c) {
+					nfj.log.Warnf("%s.%s is view, skip it", db, c)
 					continue
 				}
 				after[db] = append(after[db], c)
@@ -207,26 +220,36 @@ func (nfj *nsFilterBaseJob) polymorphism() {
 }
 
 func (nfj *nsFilterBaseJob) do() (bool, error) {
-	nfj.f(nfj.srcNs, nfj.srcNsCleaned)
-	nfj.f(nfj.dstNs, nfj.dstNsCleaned)
+	nfj.f(nfj.srcClient, nfj.srcNs, nfj.srcNsCleaned)
+	nfj.f(nfj.dstClient, nfj.dstNs, nfj.dstNsCleaned)
 
 	nfj.log.Info("source cleaned ns: ", nfj.srcNsCleaned)
 	nfj.log.Info("destination cleaned ns: ", nfj.dstNsCleaned)
 
-	same, diff := diffNs(nfj.srcNsCleaned, nfj.dstNsCleaned)
-	if !same {
-		if err := nfj.r.saveResult(&compareResult{
+	if nfj.tName == "data" && (nfj.parameter.CompareExtra == 0 || nfj.parameter.CompareExtra&Namespace != 0) {
+		diff := diffNs(nfj.srcNsCleaned, nfj.dstNsCleaned)
+		if err := nfj.r.saveResult(&JobResult{
 			Task:      nfj.tName,
-			Step:      nfj.step,
-			Identical: "no",
+			Step:      nfj.name(),
+			Identical: len(diff) == 0,
 			Diff:      diff,
 		}); err != nil {
 			nfj.log.Errorf("save result error: %s", err.Error())
 		}
+		nfj.notifyDiff(Namespace, Update, diff)
 	}
 	nfj.setData("srcNsCleaned", nfj.srcNsCleaned)
 	nfj.setData("dstNsCleaned", nfj.dstNsCleaned)
 	return true, nil
+}
+
+type nsFilterIndexJob struct {
+	nsFilterBaseJob
+}
+
+func (na *nsFilterIndexJob) polymorphism() {
+	na.nsFilterBaseJob.polymorphism()
+	na.tName = "index"
 }
 
 type nsFilterAccountJob struct {
@@ -234,13 +257,14 @@ type nsFilterAccountJob struct {
 }
 
 func (na *nsFilterAccountJob) name() string {
-	return na.step
+	// return na.step
+	return "库表信息"
 }
 
 func (na *nsFilterAccountJob) polymorphism() {
 	na.tName = "account"
 	na.step = reflect.TypeOf(nsFilterAccountJob{}).Name()
-	na.f = func(before, after map[string][]string) {
+	na.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
 			for _, c := range coll {
 				if c == "system.users" {
@@ -256,13 +280,14 @@ type nsFilterShardKeyJob struct {
 }
 
 func (ns *nsFilterShardKeyJob) name() string {
-	return ns.step
+	//return ns.step
+	return "库表信息"
 }
 
 func (ns *nsFilterShardKeyJob) polymorphism() {
 	ns.tName = "shard_key"
 	ns.step = reflect.TypeOf(nsFilterShardKeyJob{}).Name()
-	ns.f = func(before, after map[string][]string) {
+	ns.f = func(mc *mongo.Client, before, after map[string][]string) {
 		after["config"] = []string{"collections"}
 	}
 }
@@ -272,13 +297,14 @@ type nsFilterTagJob struct {
 }
 
 func (nt *nsFilterTagJob) name() string {
-	return nt.step
+	//return nt.step
+	return "库表信息"
 }
 
 func (nt *nsFilterTagJob) polymorphism() {
 	nt.tName = "tag"
 	nt.step = reflect.TypeOf(nsFilterTagJob{}).Name()
-	nt.f = func(before, after map[string][]string) {
+	nt.f = func(mc *mongo.Client, before, after map[string][]string) {
 		after["config"] = []string{"tags"}
 	}
 }
@@ -288,13 +314,14 @@ type nsFilterJavascriptJob struct {
 }
 
 func (nj *nsFilterJavascriptJob) name() string {
-	return nj.step
+	//return nj.step
+	return "库表信息"
 }
 
 func (nj *nsFilterJavascriptJob) polymorphism() {
 	nj.tName = "javascript"
 	nj.step = reflect.TypeOf(nsFilterJavascriptJob{}).Name()
-	nj.f = func(before, after map[string][]string) {
+	nj.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
 			for _, c := range coll {
 				if c == "system.js" {
@@ -310,13 +337,14 @@ type nsFilterSpecifiedJob struct {
 }
 
 func (ns *nsFilterSpecifiedJob) name() string {
-	return ns.step
+	//return ns.step
+	return "库表信息"
 }
 
 func (ns *nsFilterSpecifiedJob) polymorphism() {
-	ns.tName = "db"
+	ns.tName = "data"
 	ns.step = reflect.TypeOf(nsFilterSpecifiedJob{}).Name()
-	ns.f = func(before, after map[string][]string) {
+	ns.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
 			if len(ns.parameter.SpecifiedDb) != 0 && !inList(db, ns.parameter.SpecifiedDb) {
 				continue
@@ -324,6 +352,10 @@ func (ns *nsFilterSpecifiedJob) polymorphism() {
 			for _, c := range coll {
 				if len(ns.parameter.SpecifiedNs) != 0 &&
 					!inList(fmt.Sprintf("%s.%s", db, c), ns.parameter.SpecifiedNs) {
+					continue
+				}
+				if isView(mc, db, c) {
+					ns.log.Warnf("%s.%s is view, skip it", db, c)
 					continue
 				}
 				after[db] = append(after[db], c)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 	"io"
 	"path"
 	"runtime"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-const (
+var (
 	logPath = "compare.log"
 )
 
@@ -81,9 +82,10 @@ func (m *Formatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 // GetRotateWriter ...
 func GetRotateWriter() (io.Writer, error) {
+	lp := viper.GetString("log.file")
 	return rotatelogs.New(
-		logPath+".%Y%m%d",
-		rotatelogs.WithLinkName(logPath),
+		lp+".%Y%m%d",
+		rotatelogs.WithLinkName(lp),
 		rotatelogs.WithMaxAge(time.Duration(3)*24*time.Hour),
 		rotatelogs.WithRotationTime(24*time.Hour),
 		rotatelogs.WithRotationSize(800*1024*1024),

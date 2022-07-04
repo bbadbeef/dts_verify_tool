@@ -2,3 +2,4 @@ bin
 go.sum
 .idea
 .DS_Store
+.vscode

@@ -32,23 +32,22 @@ func InitConfig() {
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			GlobalLogger.Warnf("config file not found")
+			fmt.Println("config file not found")
 		} else {
-			GlobalLogger.Panicf(fmt.Sprintf("init config error: %s", err.Error()))
+			panic(fmt.Sprintf("init config error: %s", err.Error()))
 		}
 	} else {
 		viper.WatchConfig()
 
 		viper.OnConfigChange(func(e fsnotify.Event) {
-			GlobalLogger.Warnf("config file changed: %s, %s", e.Name, e.String())
+			fmt.Printf("config file changed: %s, %s\n", e.Name, e.String())
 		})
 	}
-
-	setDefaultConfig()
 }
 
-func setDefaultConfig() {
+func SetDefaultConfig() {
 	viper.Set("http.port", 27789)
+	viper.Set("log.file", logPath)
 }
 
 var (
