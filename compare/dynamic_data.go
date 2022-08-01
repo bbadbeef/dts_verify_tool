@@ -152,11 +152,11 @@ func (dd *dynamicDataJob) removeSame(ctx context.Context) {
 	}()
 	for id, data := range dd.srcData {
 		if _, ok := dd.dstData[id]; !ok {
-			dd.log.Warnf("not found in source: %v", id)
+			// dd.log.Warnf("not found in source: %v", id)
 			continue
 		}
 		if !compareDoc(data.val, dd.dstData[id].val) {
-			dd.log.Warnf("not equal between source and destination: %v", id)
+			// dd.log.Warnf("not equal between source and destination: %v", id)
 			continue
 		}
 		ch <- data.oid
@@ -179,7 +179,7 @@ func (dd *dynamicDataJob) doRemove(ctx context.Context, ch chan interface{}) {
 					if !ok {
 						return
 					}
-					dd.log.Info("remove from diff: ", id)
+					// dd.log.Info("remove from diff: ", id)
 					if err := dd.r.removeDiff(id); err != nil {
 						dd.log.Errorf("remove from diff error: %s", err.Error())
 					}
@@ -439,8 +439,7 @@ func (or *oplogReader) readOplog(ctx context.Context) error {
 	or.log.Infof("new round read oplog, shard: %d, ts: %d", or.shard, or.ts)
 	cursor, err := or.c.Database("local").Collection("oplog.rs").Find(ctx,
 		bson.D{{"op", bson.M{"$in": []string{"i", "u", "d"}}},
-			{"ts", bson.M{"$gte": primitive.Timestamp{T: uint32(or.ts), I: 0}}}},
-		&options.FindOptions{Sort: bson.M{"ts": 1}})
+			{"ts", bson.M{"$gte": primitive.Timestamp{T: uint32(or.ts), I: 0}}}})
 	if err != nil {
 		or.log.Errorf("read oplog error: %s", err.Error())
 		return err
