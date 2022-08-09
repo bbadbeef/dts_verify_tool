@@ -149,6 +149,7 @@ func (cc *countCompareJob) countGetter(ctx context.Context, cancel context.Cance
 			}
 			count, err := cc.getCount(ctx, c.Database(ns.db).Collection(ns.collection))
 			if err != nil {
+				cc.log.Error("get count error: ", err.Error())
 				cc.setError(err)
 				cancel()
 				return

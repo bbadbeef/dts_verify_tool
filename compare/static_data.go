@@ -8,6 +8,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -209,7 +210,20 @@ func (sd *staticDataJob) saveDiff(di *DiffItem, src, dst bson.M) error {
 	return sd.helper.saveDiff(di, src, dst)
 }
 
+func (sd *staticDataJob) resultFilter(item *productItem) bool {
+	if sd.helper.typ() == ShardKey {
+		id, ok := item.id.(string)
+		if ok && (strings.Contains(id, "TencetDTSData") || strings.Contains(id, sd.task.p.ResultDb)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (sd *staticDataJob) diff(ctx context.Context, item *productItem) error {
+	if sd.resultFilter(item) {
+		return nil
+	}
 	res, err := findByIdWithRetry(ctx, sd.dstClient, item.db+"."+item.collection, item.id)
 	if err != nil {
 		sd.log.Error("query on destination error: ", err.Error())

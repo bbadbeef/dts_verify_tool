@@ -349,6 +349,9 @@ func (ns *nsFilterSpecifiedJob) polymorphism() {
 			if len(ns.parameter.SpecifiedDb) != 0 && !inList(db, ns.parameter.SpecifiedDb) {
 				continue
 			}
+			if inList(db, systemDb) {
+				continue
+			}
 			for _, c := range coll {
 				if len(ns.parameter.SpecifiedNs) != 0 &&
 					!inList(fmt.Sprintf("%s.%s", db, c), ns.parameter.SpecifiedNs) {
@@ -356,6 +359,9 @@ func (ns *nsFilterSpecifiedJob) polymorphism() {
 				}
 				if isView(mc, db, c) {
 					ns.log.Warnf("%s.%s is view, skip it", db, c)
+					continue
+				}
+				if inListRegex(c, systemCollection) {
 					continue
 				}
 				after[db] = append(after[db], c)

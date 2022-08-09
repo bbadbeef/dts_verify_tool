@@ -28,6 +28,7 @@ type dynamicDataJob struct {
 	assistJob
 	srcCh chan *DiffItem
 	dstCh chan *DiffItem
+	ch    chan *DiffItem
 
 	diffCh     chan *DiffItem // oplog读取的原始数据
 	diffBuff   []interface{}
@@ -76,8 +77,9 @@ func (dd *dynamicDataJob) do() (bool, error) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
+		time.Sleep(time.Second * 10)
 		// 循环遍历diff表，删掉两端数据一致的
-		dd.startDiffLoop(ctx)
+		dd.startDiffLoop1(ctx)
 	}()
 
 	go func() {
@@ -155,6 +157,103 @@ func (dd *dynamicDataJob) startDiffLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (dd *dynamicDataJob) startDiffLoop1(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second * 5):
+			dd.log.Info("start diff round")
+			willFinish := dd.endFlag
+			if err := dd.fetchDiffData1(ctx); err != nil {
+				dd.log.Errorf("fetch diff data error: %s", err.Error())
+				break
+			}
+			dd.log.Info("diff round finish")
+			if willFinish {
+				return
+			}
+		}
+	}
+}
+
+func (dd *dynamicDataJob) fetchDiffData1(ctx context.Context) error {
+	concurrency := dd.parameter.SrcConcurrency
+	if concurrency > dd.parameter.DstConcurrency {
+		concurrency = dd.parameter.DstConcurrency
+	}
+	dd.ch = make(chan *DiffItem, concurrency*buffLengthRatio)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dd.find1(ctx, concurrency)
+	}()
+	cursor, err := dd.dstClient.Database(dd.parameter.ResultDb).Collection(dd.r.diffCollection()).
+		Find(ctx, bson.D{}, &options.FindOptions{})
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(context.Background())
+	for cursor.Next(ctx) {
+		var di DiffItem
+		if err := cursor.Decode(&di); err != nil {
+			return err
+		}
+		dd.ch <- &di
+	}
+	close(dd.ch)
+	wg.Wait()
+	return nil
+}
+
+func (dd *dynamicDataJob) find1(ctx context.Context, concurrency int) {
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		dd.newFindWorker(ctx, &wg)
+	}
+	wg.Wait()
+}
+
+func (dd *dynamicDataJob) newFindWorker(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Add(1)
+	go func() {
+		defer func() {
+			wg.Done()
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case item, ok := <-dd.ch:
+				if !ok {
+					return
+				}
+				srcData, err := findByIdWithRetry(ctx, dd.srcClient, item.Ns, item.Id)
+				if err != nil {
+					dd.log.Errorf("query on source error: %s", err.Error())
+					return
+				}
+				dstData, err := findByIdWithRetry(ctx, dd.dstClient, item.Ns, item.Id)
+				if err != nil {
+					dd.log.Errorf("query on destination error: %s", err.Error())
+					return
+				}
+				if compareDoc(srcData, dstData) {
+					if err := dd.r.removeDiff(item.OId); err != nil {
+						dd.log.Errorf("remove from diff error: %s", err.Error())
+					}
+				} else {
+					if err := dd.r.confirmDiff(item.OId); err != nil {
+						dd.log.Errorf("confirm diff error: %s", err.Error())
+					}
+				}
+			}
+		}
+	}()
 }
 
 func (dd *dynamicDataJob) removeSame(ctx context.Context) {
