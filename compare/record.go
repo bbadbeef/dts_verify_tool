@@ -23,6 +23,7 @@ type Record struct {
 	*record
 }
 
+// NewRecord ...
 func NewRecord(srcUri, dstUri string, outDb string, taskId string) (*Record, error) {
 	dstClient, err := newMongoClient(dstUri)
 	if err != nil {
@@ -42,6 +43,7 @@ func NewRecord(srcUri, dstUri string, outDb string, taskId string) (*Record, err
 	}, nil
 }
 
+// JobResult ...
 type JobResult struct {
 	Task      string      `bson:"task,omitempty"`
 	Step      string      `bson:"step,omitempty"`
@@ -49,6 +51,7 @@ type JobResult struct {
 	Diff      interface{} `bson:"diff,omitempty"`
 }
 
+// DiffItem ...
 type DiffItem struct {
 	OId       interface{} `bson:"_id,omitempty"`
 	Ns        string
@@ -58,6 +61,7 @@ type DiffItem struct {
 	shard     int
 }
 
+// TaskStatus ...
 type TaskStatus struct {
 	OId         string `bson:"_id"`
 	Status      string
@@ -244,6 +248,7 @@ func (r *record) updateStatus(taskId string, fields map[string]interface{}) erro
 	return err
 }
 
+// GetStatus ...
 func (r *record) GetStatus() (*TaskStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -270,6 +275,7 @@ func (r *record) GetStatus() (*TaskStatus, error) {
 	return &status, nil
 }
 
+// GetDiffCount ...
 func (r *record) GetDiffCount() (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -277,6 +283,7 @@ func (r *record) GetDiffCount() (int64, error) {
 		options.EstimatedDocumentCount().SetMaxTime(timeout))
 }
 
+// IsIdentical ...
 func (r *record) IsIdentical() (bool, error) {
 	results, err := r.GetResult()
 	if err != nil {
@@ -315,6 +322,7 @@ func (r *record) IsIdentical() (bool, error) {
 	}
 }
 
+// GetSampleDiffData ...
 func (r *record) GetSampleDiffData() ([]*MetaDiffItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout*3)
 	defer cancel()
@@ -361,6 +369,7 @@ func (r *record) GetSampleDiffData() ([]*MetaDiffItem, error) {
 	return res, nil
 }
 
+// GetResult ...
 func (r *record) GetResult() ([]*JobResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -388,6 +397,7 @@ func (r *record) flushProgress(ctx context.Context, taskId string, progress int,
 	})
 }
 
+// GetRecentTs ...
 func (r *record) GetRecentTs() (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -407,6 +417,7 @@ func (r *record) GetRecentTs() (int, error) {
 	return int(diff.Ts), nil
 }
 
+// GetAccountMetaDiff ...
 func (r *record) GetAccountMetaDiff() ([]*DiffItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -429,6 +440,8 @@ func (r *record) GetAccountMetaDiff() ([]*DiffItem, error) {
 	}
 	return res, nil
 }
+
+// GetJsMetaDiff ...
 func (r *record) GetJsMetaDiff() ([]*DiffItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -451,6 +464,8 @@ func (r *record) GetJsMetaDiff() ([]*DiffItem, error) {
 	}
 	return res, nil
 }
+
+// GetShardMetaDiff ...
 func (r *record) GetShardMetaDiff() ([]*DiffItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -474,11 +489,13 @@ func (r *record) GetShardMetaDiff() ([]*DiffItem, error) {
 	return res, nil
 }
 
+// TagDoc ...
 type TagDoc struct {
 	Ns  string
 	Tag string
 }
 
+// GetTagsDiff ...
 func (r *record) GetTagsDiff() ([]*TagDoc, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

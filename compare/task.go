@@ -22,17 +22,18 @@ const (
 
 func genJobs(c uint) []Job {
 	jobs := []Job{&nsJob{}}
+	metaJobs := []Job{&nsJob{}}
 	if c&Account != 0 {
-		jobs = append(jobs, &nsFilterAccountJob{}, &countCompareJob{}, &accountDataJob{})
+		metaJobs = append(metaJobs, &nsFilterAccountJob{}, &countCompareJob{}, &accountDataJob{})
 	}
 	if c&ShardKey != 0 {
-		jobs = append(jobs, &nsFilterShardKeyJob{}, &countCompareJob{}, &shardKeyDataJob{})
+		metaJobs = append(metaJobs, &nsFilterShardKeyJob{}, &countCompareJob{}, &shardKeyDataJob{})
 	}
 	if c&Tag != 0 {
-		jobs = append(jobs, &nsFilterTagJob{}, &countCompareJob{}, &tagDataJob{})
+		metaJobs = append(metaJobs, &nsFilterTagJob{}, &countCompareJob{}, &tagDataJob{})
 	}
 	if c&Js != 0 {
-		jobs = append(jobs, &nsFilterJavascriptJob{}, &countCompareJob{}, &javascriptDataJob{})
+		metaJobs = append(metaJobs, &nsFilterJavascriptJob{}, &countCompareJob{}, &javascriptDataJob{})
 	}
 	getFilter := func() Job {
 		if c&Partial != 0 {
@@ -41,14 +42,16 @@ func genJobs(c uint) []Job {
 		return &nsFilterBaseJob{}
 	}
 	if c&Index != 0 {
-		jobs = append(jobs, getFilter(), &indexJob{})
+		metaJobs = append(metaJobs, getFilter(), &indexJob{})
 	}
-	if c&Count != 0 {
-		jobs = append(jobs, getFilter(), &countCompareJob{})
+	if c&Namespace != 0 || c&Count != 0 {
+		metaJobs = append(metaJobs, getFilter(), &countCompareJob{})
 	}
 	if c&Data != 0 {
 		jobs = append(jobs, getFilter(), &countCompareJob{}, &staticDataJob{}, &dynamicDataJob{})
 	}
+	jobs = append(jobs, &toFinishingJob{})
+	jobs = append(jobs, metaJobs...)
 
 	return jobs
 }
@@ -147,7 +150,7 @@ func (t *Task) Init() error {
 	}
 
 	steps := TaskStep[t.p.CompareType]
-	if len(t.steps) == 0 {
+	if len(steps) == 0 {
 		steps = genJobs(t.p.CompareExtra)
 	}
 	for _, s := range steps {
@@ -243,6 +246,7 @@ func (t *Task) SetCBFunc(f func(event *Event)) {
 	t.p.CBFunc = f
 }
 
+// SetFiniteFunc ...
 func (t *Task) SetFiniteFunc(f func() bool) {
 	t.p.FiniteFunc = f
 }
@@ -257,14 +261,17 @@ func (t *Task) GetOplogDelay() (int, error) {
 	return t.b.r.getOplogDelay()
 }
 
+// AddActionOnFinish ...
 func (t *Task) AddActionOnFinish(f func()) {
 	t.onFinishFunc = append(t.onFinishFunc, f)
 }
 
+// GetLog ...
 func (t *Task) GetLog() *logrus.Logger {
 	return t.l
 }
 
+// GetSampleDiffData ...
 func (t *Task) GetSampleDiffData() ([]*MetaDiffItem, error) {
 	return t.b.r.GetSampleDiffData()
 }

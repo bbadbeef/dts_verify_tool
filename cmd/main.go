@@ -234,12 +234,10 @@ func main() {
 		if err := task.Run(); err != nil {
 			l.Error("run task error: ", err.Error())
 			fmt.Println("run task error: ", err.Error())
-			task.SetStatus(compare.StatusFailed)
 			return
 		}
-		task.SetStatus(compare.StatusSuccess)
 		fmt.Println("task success, now exit")
-		os.Stdout.WriteString(task.Display())
+		//os.Stdout.WriteString(task.Display())
 	}
 }
 

@@ -24,7 +24,8 @@ type BaseJob struct {
 	r         *record
 	e         error
 	task      *Task
-	tName     string
+	subName   string
+	status    int
 
 	srcClient       *mongo.Client
 	dstClient       *mongo.Client
@@ -35,6 +36,12 @@ type BaseJob struct {
 
 	imData map[string]interface{}
 }
+
+const (
+	Empty = iota
+	Finishing
+	Finished
+)
 
 func (bj *BaseJob) init() error {
 	return nil
@@ -50,7 +57,14 @@ func (bj *BaseJob) getData(k string) interface{} {
 	return bj.imData[k]
 }
 
+func (bj *BaseJob) setStatus(status int) {
+	bj.status = status
+}
+
 func (bj *BaseJob) setError(err error) {
+	if bj.e != nil {
+		return
+	}
 	bj.e = err
 }
 
@@ -60,9 +74,6 @@ func (bj *BaseJob) error() error {
 
 func (bj *BaseJob) notifyDiff(t int, a int, items []*MetaDiffItem) {
 	if bj.parameter.CBFunc == nil {
-		return
-	}
-	if t == Data {
 		return
 	}
 	res := make([]*DiffRecord, 0)
@@ -87,14 +98,14 @@ func (bj *BaseJob) notifyDiff(t int, a int, items []*MetaDiffItem) {
 
 func (bj *BaseJob) updateStepSimple(step string) error {
 	return bj.r.updateStatus(bj.task.id, map[string]interface{}{
-		"sub_task": bj.tName,
+		"sub_task": bj.subName,
 		"step":     step,
 	})
 }
 
 func (bj *BaseJob) updateStep(step string) error {
 	return bj.r.updateStatus(bj.task.id, map[string]interface{}{
-		"sub_task":      bj.tName,
+		"sub_task":      bj.subName,
 		"step":          step,
 		"progress":      0,
 		"finish_ns":     []string{},
@@ -115,7 +126,7 @@ type initJob struct {
 }
 
 func (ij *initJob) do() (bool, error) {
-	ij.tName = ij.task.name
+	ij.subName = ij.task.name
 	ij.imData = make(map[string]interface{})
 	var err error
 	ij.srcClient, err = newMongoClient(ij.parameter.SrcUrl)
@@ -170,7 +181,7 @@ func (ij *initJob) do() (bool, error) {
 		if err := ij.r.saveStatus(&TaskStatus{
 			Name:      ij.task.name,
 			Extra:     ij.parameter.CompareExtra,
-			SubTask:   ij.tName,
+			SubTask:   ij.subName,
 			OId:       ij.task.id,
 			Status:    StatusRunning,
 			Step:      "init",
@@ -187,7 +198,7 @@ func (ij *initJob) do() (bool, error) {
 }
 
 func (ij *initJob) setResumeInfo(status *TaskStatus) error {
-	ij.tName = status.Name
+	ij.subName = status.Name
 	ij.task.name = status.Name
 	ij.task.id = status.OId
 	ij.parameter.CompareType = status.Name

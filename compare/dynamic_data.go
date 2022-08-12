@@ -277,31 +277,31 @@ func (dd *dynamicDataJob) removeSame(ctx context.Context) {
 			oid: data.oid,
 			act: act,
 		}
-		dd.notifyDiff(Data, act, []*MetaDiffItem{
-			{
-				Ns:    data.ns,
-				SrcId: data.id,
-				DstId: func() interface{} {
-					if _, ok := dd.dstData[id]; !ok {
-						return nil
-					}
-					if len(dd.dstData[id].val) == 0 {
-						return nil
-					}
-					return data.id
-				}(),
-				SrcVal: data.val,
-				DstVal: func() interface{} {
-					if _, ok := dd.dstData[id]; !ok {
-						return nil
-					}
-					if len(dd.dstData[id].val) == 0 {
-						return nil
-					}
-					return dd.dstData[id].val
-				}(),
-			},
-		})
+		//dd.notifyDiff(Data, act, []*MetaDiffItem{
+		//	{
+		//		Ns:    data.ns,
+		//		SrcId: data.id,
+		//		DstId: func() interface{} {
+		//			if _, ok := dd.dstData[id]; !ok {
+		//				return nil
+		//			}
+		//			if len(dd.dstData[id].val) == 0 {
+		//				return nil
+		//			}
+		//			return data.id
+		//		}(),
+		//		SrcVal: data.val,
+		//		DstVal: func() interface{} {
+		//			if _, ok := dd.dstData[id]; !ok {
+		//				return nil
+		//			}
+		//			if len(dd.dstData[id].val) == 0 {
+		//				return nil
+		//			}
+		//			return dd.dstData[id].val
+		//		}(),
+		//	},
+		//})
 	}
 	close(ch)
 	wg.Wait()

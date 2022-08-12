@@ -106,6 +106,9 @@ func (nj *nsJob) listCollection() (bool, error) {
 				if !ok {
 					return
 				}
+				if inList(db, systemDb) {
+					continue
+				}
 				cs, err := showCollections(c, db)
 				if err != nil {
 					cancel()
@@ -198,7 +201,7 @@ func (nfj *nsFilterBaseJob) init() error {
 }
 
 func (nfj *nsFilterBaseJob) polymorphism() {
-	nfj.tName = "data"
+	nfj.subName = "data"
 	nfj.step = reflect.TypeOf(*nfj).Name()
 	nfj.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
@@ -226,18 +229,19 @@ func (nfj *nsFilterBaseJob) do() (bool, error) {
 	nfj.log.Info("source cleaned ns: ", nfj.srcNsCleaned)
 	nfj.log.Info("destination cleaned ns: ", nfj.dstNsCleaned)
 
-	if nfj.tName == "data" && (nfj.parameter.CompareExtra == 0 || nfj.parameter.CompareExtra&Namespace != 0) {
-		diff := diffNs(nfj.srcNsCleaned, nfj.dstNsCleaned)
-		if err := nfj.r.saveResult(&JobResult{
-			Task:      nfj.tName,
-			Step:      nfj.name(),
-			Identical: len(diff) == 0,
-			Diff:      diff,
-		}); err != nil {
-			nfj.log.Errorf("save result error: %s", err.Error())
-		}
-		nfj.notifyDiff(Namespace, Update, diff)
-	}
+	//if nfj.status == Finishing && nfj.subName == "data" &&
+	//	(nfj.parameter.CompareExtra == 0 || nfj.parameter.CompareExtra&Namespace != 0) {
+	//	diff := diffNs(nfj.srcNsCleaned, nfj.dstNsCleaned)
+	//	if err := nfj.r.saveResult(&JobResult{
+	//		Task:      nfj.subName,
+	//		Step:      nfj.name(),
+	//		Identical: len(diff) == 0,
+	//		Diff:      diff,
+	//	}); err != nil {
+	//		nfj.log.Errorf("save result error: %s", err.Error())
+	//	}
+	//	nfj.notifyDiff(Namespace, Update, diff)
+	//}
 	nfj.setData("srcNsCleaned", nfj.srcNsCleaned)
 	nfj.setData("dstNsCleaned", nfj.dstNsCleaned)
 	return true, nil
@@ -249,7 +253,7 @@ type nsFilterIndexJob struct {
 
 func (na *nsFilterIndexJob) polymorphism() {
 	na.nsFilterBaseJob.polymorphism()
-	na.tName = "index"
+	na.subName = "index"
 }
 
 type nsFilterAccountJob struct {
@@ -262,16 +266,17 @@ func (na *nsFilterAccountJob) name() string {
 }
 
 func (na *nsFilterAccountJob) polymorphism() {
-	na.tName = "account"
+	na.subName = "account"
 	na.step = reflect.TypeOf(nsFilterAccountJob{}).Name()
 	na.f = func(mc *mongo.Client, before, after map[string][]string) {
-		for db, coll := range before {
-			for _, c := range coll {
-				if c == "system.users" {
-					after[db] = append(after[db], c)
-				}
-			}
-		}
+		//for db, coll := range before {
+		//	for _, c := range coll {
+		//		if c == "system.users" {
+		//			after[db] = append(after[db], c)
+		//		}
+		//	}
+		//}
+		after["admin"] = []string{"system.users"}
 	}
 }
 
@@ -285,7 +290,7 @@ func (ns *nsFilterShardKeyJob) name() string {
 }
 
 func (ns *nsFilterShardKeyJob) polymorphism() {
-	ns.tName = "shard_key"
+	ns.subName = "shard_key"
 	ns.step = reflect.TypeOf(nsFilterShardKeyJob{}).Name()
 	ns.f = func(mc *mongo.Client, before, after map[string][]string) {
 		after["config"] = []string{"collections"}
@@ -302,7 +307,7 @@ func (nt *nsFilterTagJob) name() string {
 }
 
 func (nt *nsFilterTagJob) polymorphism() {
-	nt.tName = "tag"
+	nt.subName = "tag"
 	nt.step = reflect.TypeOf(nsFilterTagJob{}).Name()
 	nt.f = func(mc *mongo.Client, before, after map[string][]string) {
 		after["config"] = []string{"tags"}
@@ -319,7 +324,7 @@ func (nj *nsFilterJavascriptJob) name() string {
 }
 
 func (nj *nsFilterJavascriptJob) polymorphism() {
-	nj.tName = "javascript"
+	nj.subName = "javascript"
 	nj.step = reflect.TypeOf(nsFilterJavascriptJob{}).Name()
 	nj.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
@@ -342,20 +347,23 @@ func (ns *nsFilterSpecifiedJob) name() string {
 }
 
 func (ns *nsFilterSpecifiedJob) polymorphism() {
-	ns.tName = "data"
+	ns.subName = "data"
 	ns.step = reflect.TypeOf(nsFilterSpecifiedJob{}).Name()
 	ns.f = func(mc *mongo.Client, before, after map[string][]string) {
 		for db, coll := range before {
-			if len(ns.parameter.SpecifiedDb) != 0 && !inList(db, ns.parameter.SpecifiedDb) {
-				continue
-			}
 			if inList(db, systemDb) {
 				continue
 			}
+			if db == "TencetDTSData" || db == ns.task.p.ResultDb {
+				continue
+			}
 			for _, c := range coll {
-				if len(ns.parameter.SpecifiedNs) != 0 &&
-					!inList(fmt.Sprintf("%s.%s", db, c), ns.parameter.SpecifiedNs) {
-					continue
+				if len(ns.parameter.SpecifiedDb) == 0 || (len(ns.parameter.SpecifiedDb) != 0 &&
+					!inList(db, ns.parameter.SpecifiedDb)) {
+					if len(ns.parameter.SpecifiedNs) == 0 || (len(ns.parameter.SpecifiedNs) != 0 &&
+						!inList(fmt.Sprintf("%s.%s", db, c), ns.parameter.SpecifiedNs)) {
+						continue
+					}
 				}
 				if isView(mc, db, c) {
 					ns.log.Warnf("%s.%s is view, skip it", db, c)

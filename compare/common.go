@@ -45,6 +45,7 @@ var (
 	systemCollection = []string{"system.*"}
 )
 
+// MetaDiffItem ...
 type MetaDiffItem struct {
 	Ns     string
 	SrcId  interface{}
@@ -132,6 +133,8 @@ func getIndexes(ctx context.Context, c *mongo.Client, db, coll string) (map[stri
 	}
 	idxMap := make(map[string]map[string]interface{})
 	for _, idx := range results {
+		delete(idx, "ns")
+		delete(idx, "background")
 		if name, ok := idx["name"].(string); ok {
 			idxMap[name] = idx
 		}
@@ -283,7 +286,76 @@ func diffNs(src, dst map[string][]string) []*MetaDiffItem {
 			})
 		}
 	}
+	for k, _ := range dstNs {
+		if _, ok := srcNs[k]; !ok {
+			res = append(res, &MetaDiffItem{
+				Ns:    k,
+				SrcId: "",
+				DstId: k,
+			})
+		}
+	}
 	return res
+}
+
+func diffCount1(src, dst map[string]int64) ([]*MetaDiffItem, []*MetaDiffItem, []*MetaDiffItem) {
+	schemaRes := make([]*MetaDiffItem, 0)
+	countRes := make([]*MetaDiffItem, 0)
+	dataRes := make([]*MetaDiffItem, 0)
+	for ns, count := range src {
+		dstCount, ok := dst[ns]
+		if !ok {
+			schemaRes = append(schemaRes, &MetaDiffItem{
+				Ns:    ns,
+				SrcId: ns,
+				DstId: "",
+			})
+			if true || count != 0 {
+				countRes = append(countRes, &MetaDiffItem{
+					Ns:     ns,
+					SrcId:  "",
+					DstId:  "",
+					SrcVal: count,
+					DstVal: "null",
+				})
+			}
+			continue
+		}
+		if dstCount != count {
+			countRes = append(countRes, &MetaDiffItem{
+				Ns:     ns,
+				SrcId:  "",
+				DstId:  "",
+				SrcVal: count,
+				DstVal: dstCount,
+			})
+		}
+	}
+	for ns, count := range dst {
+		if _, ok := src[ns]; ok {
+			continue
+		}
+		schemaRes = append(schemaRes, &MetaDiffItem{
+			Ns:    ns,
+			SrcId: "",
+			DstId: ns,
+		})
+		if true || count != 0 {
+			countRes = append(countRes, &MetaDiffItem{
+				Ns:     ns,
+				SrcId:  "",
+				DstId:  "",
+				SrcVal: "null",
+				DstVal: count,
+			})
+			dataRes = append(dataRes, &MetaDiffItem{
+				Ns:    ns,
+				SrcId: "null",
+				DstId: "所有数据",
+			})
+		}
+	}
+	return schemaRes, countRes, dataRes
 }
 
 func diffCount(src, dst map[string]int64) []*MetaDiffItem {
@@ -298,6 +370,18 @@ func diffCount(src, dst map[string]int64) []*MetaDiffItem {
 			DstId:  "",
 			SrcVal: count,
 			DstVal: dst[ns],
+		})
+	}
+	for ns, count := range dst {
+		if _, ok := src[ns]; ok {
+			continue
+		}
+		res = append(res, &MetaDiffItem{
+			Ns:     ns,
+			SrcId:  "",
+			DstId:  "",
+			SrcVal: 0,
+			DstVal: count,
 		})
 	}
 	return res
@@ -327,6 +411,20 @@ func diffIndex(src, dst map[string]map[string]map[string]interface{}) []*MetaDif
 				DstId:  srcIndexName,
 				DstVal: dst[ns][srcIndexName],
 			})
+		}
+	}
+	for ns, dstIndexMap := range dst {
+		for dstIndexName, dstIndexItem := range dstIndexMap {
+			if src[ns] == nil || src[ns][dstIndexName] == nil {
+				res = append(res, &MetaDiffItem{
+					Ns:     ns,
+					SrcId:  "",
+					SrcVal: "",
+					DstId:  dstIndexName,
+					DstVal: dstIndexItem,
+				})
+				continue
+			}
 		}
 	}
 	return res

@@ -89,7 +89,7 @@ func (ij *indexJob) do() (bool, error) {
 	ij.log.Info("index compare finish")
 
 	result := &JobResult{
-		Task:      ij.tName,
+		Task:      ij.subName,
 		Step:      ij.name(),
 		Identical: true,
 	}

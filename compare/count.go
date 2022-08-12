@@ -52,7 +52,7 @@ func (cc *countCompareJob) init() error {
 func (cc *countCompareJob) getCount(ctx context.Context, c *mongo.Collection) (int64, error) {
 	subCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if cc.tName == "data_count" {
+	if cc.subName == "data_count" {
 		return c.CountDocuments(subCtx, bson.D{}, options.Count().SetMaxTime(timeout))
 	}
 	return c.EstimatedDocumentCount(subCtx, options.EstimatedDocumentCount().SetMaxTime(timeout))
@@ -97,7 +97,6 @@ func (cc *countCompareJob) do() (bool, error) {
 					return
 				case dstCh <- &nss{db: db, collection: c}:
 				}
-
 			}
 		}
 	}()
@@ -111,28 +110,65 @@ func (cc *countCompareJob) do() (bool, error) {
 	}
 
 	cc.log.Info("count compare finish")
+	cc.doFinishJob()
 
-	if cc.tName == "data" && (cc.parameter.CompareExtra == 0 || cc.parameter.CompareExtra&Count != 0) {
-		result := &JobResult{
-			Task:      cc.tName,
-			Step:      cc.name(),
-			Identical: true,
-		}
-		if !reflect.DeepEqual(cc.srcCount, cc.dstCount) {
-			diffs := diffCount(cc.srcCount, cc.dstCount)
-			if len(diffs) != 0 {
-				result.Identical = false
-				result.Diff = diffs
-				cc.notifyDiff(Count, Update, diffs)
-			}
-		}
-		if err := cc.r.saveResult(result); err != nil {
-			cc.log.Errorf("save result error: %s", err.Error())
-		}
-	}
 	cc.setData("srcCount", cc.srcCount)
 	cc.setData("dstCount", cc.dstCount)
 	return true, nil
+}
+
+func (cc *countCompareJob) doFinishJob() {
+	if cc.status == Finishing && cc.subName == "data" {
+		var schemaDiffs, countDiffs, dataDiffs []*MetaDiffItem
+		if !reflect.DeepEqual(cc.srcCount, cc.dstCount) {
+			schemaDiffs, countDiffs, dataDiffs = diffCount1(cc.srcCount, cc.dstCount)
+		}
+		if cc.parameter.CompareExtra == 0 || cc.parameter.CompareExtra&Namespace != 0 {
+			schemaResult := &JobResult{
+				Task:      cc.subName,
+				Step:      cc.name(),
+				Identical: true,
+			}
+			if len(schemaDiffs) != 0 {
+				schemaResult.Identical = false
+				schemaResult.Diff = schemaDiffs
+				cc.notifyDiff(Namespace, Update, schemaDiffs)
+			}
+			if err := cc.r.saveResult(schemaResult); err != nil {
+				cc.log.Errorf("save result error: %s", err.Error())
+			}
+		}
+		if cc.parameter.CompareExtra == 0 || cc.parameter.CompareExtra&Count != 0 {
+			countResult := &JobResult{
+				Task:      cc.subName,
+				Step:      cc.name(),
+				Identical: true,
+			}
+			if len(countDiffs) != 0 {
+				countResult.Identical = false
+				countResult.Diff = countDiffs
+				cc.notifyDiff(Count, Update, countDiffs)
+			}
+			if err := cc.r.saveResult(countResult); err != nil {
+				cc.log.Errorf("save result error: %s", err.Error())
+			}
+		}
+		if cc.parameter.CompareExtra == 0 || cc.parameter.CompareExtra&Data != 0 {
+			dataResult := &JobResult{
+				Task:      cc.subName,
+				Step:      cc.name(),
+				Identical: true,
+			}
+			if len(dataDiffs) != 0 {
+				dataResult.Identical = false
+				dataResult.Diff = countDiffs
+				cc.notifyDiff(Data, Update, dataDiffs)
+			}
+			if err := cc.r.saveResult(dataResult); err != nil {
+				cc.log.Errorf("save result error: %s", err.Error())
+			}
+		}
+	}
 }
 
 func (cc *countCompareJob) countGetter(ctx context.Context, cancel context.CancelFunc, c *mongo.Client,

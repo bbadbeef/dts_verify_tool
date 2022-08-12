@@ -190,32 +190,48 @@ func (sd *staticDataJob) compareItem(src, dst bson.M) bool {
 }
 
 func (sd *staticDataJob) saveDiff(di *DiffItem, src, dst bson.M) error {
-	sd.notifyDiff(sd.helper.typ(), Update, []*MetaDiffItem{{
-		Ns:    di.Ns,
-		SrcId: di.Id,
-		DstId: func() interface{} {
-			if len(dst) == 0 {
-				return nil
-			}
-			return di.Id
-		}(),
-		SrcVal: src,
-		DstVal: func() interface{} {
-			if len(dst) == 0 {
-				return nil
-			}
-			return dst
-		}(),
-	}})
+	if sd.helper.typ() != Data {
+		sd.notifyDiff(sd.helper.typ(), Update, []*MetaDiffItem{{
+			Ns:    di.Ns,
+			SrcId: di.Id,
+			DstId: func() interface{} {
+				if len(dst) == 0 {
+					return nil
+				}
+				return di.Id
+			}(),
+			SrcVal: src,
+			DstVal: func() interface{} {
+				if len(dst) == 0 {
+					return nil
+				}
+				return dst
+			}(),
+		}})
+	}
 	return sd.helper.saveDiff(di, src, dst)
 }
 
 func (sd *staticDataJob) resultFilter(item *productItem) bool {
 	if sd.helper.typ() == ShardKey {
 		id, ok := item.id.(string)
-		if ok && (strings.Contains(id, "TencetDTSData") || strings.Contains(id, sd.task.p.ResultDb)) {
+		if !ok {
+			return false
+		}
+		ns := strings.SplitN(id, ".", 2)
+		if len(ns) != 2 {
+			return false
+		}
+		if ns[0] == "TencetDTSData" || ns[0] == sd.task.p.ResultDb {
 			return true
 		}
+		if len(sd.parameter.SpecifiedDb) != 0 && !inList(ns[0], sd.parameter.SpecifiedDb) {
+			if len(sd.parameter.SpecifiedNs) == 0 ||
+				(len(sd.parameter.SpecifiedNs) != 0 && !inList(id, sd.parameter.SpecifiedNs)) {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
